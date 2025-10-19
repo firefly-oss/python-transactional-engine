@@ -40,33 +40,42 @@ class DevCommands:
         self.formatter.print_header(f"🔍 Inspecting SAGA: {saga_class.__name__}")
 
         # Check if it's a SAGA class
-        if not hasattr(saga_class, '_fireflytx_saga_metadata'):
+        if not hasattr(saga_class, '_saga_config'):
             self.formatter.print_error("Not a SAGA class. Use @saga decorator.")
             return
 
-        metadata = saga_class._fireflytx_saga_metadata
+        saga_config = saga_class._saga_config
 
         # Create tree structure
         tree = Tree(f"[bold cyan]SAGA: {saga_class.__name__}[/bold cyan]")
 
         # Add metadata
         meta_branch = tree.add("[yellow]Metadata[/yellow]")
-        meta_branch.add(f"Name: {metadata.get('name', 'N/A')}")
-        meta_branch.add(f"Description: {metadata.get('description', 'N/A')}")
+        meta_branch.add(f"Name: {saga_config.name}")
+        meta_branch.add(f"Layer Concurrency: {saga_config.layer_concurrency}")
 
         # Find all steps
         steps_branch = tree.add("[green]Steps[/green]")
-        for name, method in inspect.getmembers(saga_class, predicate=inspect.isfunction):
-            if hasattr(method, '_fireflytx_step_metadata'):
-                step_meta = method._fireflytx_step_metadata
-                step_node = steps_branch.add(f"[cyan]{name}[/cyan]")
-                step_node.add(f"Type: {step_meta.get('type', 'step')}")
-                step_node.add(f"Order: {step_meta.get('order', 'auto')}")
+        for step_id, step_config in saga_config.steps.items():
+            step_node = steps_branch.add(f"[cyan]{step_id}[/cyan]")
+            step_node.add(f"Retry: {step_config.retry}")
+            step_node.add(f"Timeout: {step_config.timeout_ms}ms")
+            step_node.add(f"Backoff: {step_config.backoff_ms}ms")
 
-                # Check for compensation
-                if hasattr(method, '_fireflytx_compensation'):
-                    comp_name = method._fireflytx_compensation
-                    step_node.add(f"[red]Compensation: {comp_name}[/red]")
+            if step_config.depends_on:
+                deps = ", ".join(step_config.depends_on)
+                step_node.add(f"Depends on: {deps}")
+
+            # Check for compensation
+            if step_config.compensate:
+                step_node.add(f"[red]Compensation: {step_config.compensate}[/red]")
+                step_node.add(f"[red]Compensation Critical: {step_config.compensation_critical}[/red]")
+
+        # Show compensation methods
+        if saga_config.compensation_methods:
+            comp_branch = tree.add("[red]Compensation Methods[/red]")
+            for step_id, comp_method in saga_config.compensation_methods.items():
+                comp_branch.add(f"{step_id} → {comp_method}")
 
         self.formatter.console.print(tree)
 
@@ -89,34 +98,34 @@ class DevCommands:
         self.formatter.print_header(f"🔍 Inspecting TCC: {tcc_class.__name__}")
 
         # Check if it's a TCC class
-        if not hasattr(tcc_class, '_fireflytx_tcc_metadata'):
+        if not hasattr(tcc_class, '_tcc_config'):
             self.formatter.print_error("Not a TCC class. Use @tcc decorator.")
             return
 
-        metadata = tcc_class._fireflytx_tcc_metadata
+        tcc_config = tcc_class._tcc_config
 
         # Create tree structure
         tree = Tree(f"[bold cyan]TCC: {tcc_class.__name__}[/bold cyan]")
 
         # Add metadata
         meta_branch = tree.add("[yellow]Metadata[/yellow]")
-        meta_branch.add(f"Name: {metadata.get('name', 'N/A')}")
-        meta_branch.add(f"Description: {metadata.get('description', 'N/A')}")
+        meta_branch.add(f"Name: {tcc_config.name}")
+        meta_branch.add(f"Timeout: {tcc_config.timeout_ms}ms")
 
         # Find all participants
         participants_branch = tree.add("[green]Participants[/green]")
-        for name, method in inspect.getmembers(tcc_class, predicate=inspect.isfunction):
-            if hasattr(method, '_fireflytx_participant_metadata'):
-                part_meta = method._fireflytx_participant_metadata
-                part_node = participants_branch.add(f"[cyan]{name}[/cyan]")
+        for participant_id, participant_config in tcc_config.participants.items():
+            part_node = participants_branch.add(f"[cyan]{participant_id}[/cyan]")
+            part_node.add(f"Order: {participant_config.order}")
+            part_node.add(f"Timeout: {participant_config.timeout_ms}ms")
 
-                # Find try/confirm/cancel methods
-                if hasattr(method, '_fireflytx_try_method'):
-                    part_node.add(f"[green]Try: {method._fireflytx_try_method}[/green]")
-                if hasattr(method, '_fireflytx_confirm_method'):
-                    part_node.add(f"[blue]Confirm: {method._fireflytx_confirm_method}[/blue]")
-                if hasattr(method, '_fireflytx_cancel_method'):
-                    part_node.add(f"[red]Cancel: {method._fireflytx_cancel_method}[/red]")
+            # Show try/confirm/cancel methods
+            if participant_config.try_method:
+                part_node.add(f"[green]Try: {participant_config.try_method}[/green]")
+            if participant_config.confirm_method:
+                part_node.add(f"[blue]Confirm: {participant_config.confirm_method}[/blue]")
+            if participant_config.cancel_method:
+                part_node.add(f"[red]Cancel: {participant_config.cancel_method}[/red]")
 
         self.formatter.console.print(tree)
 
@@ -140,8 +149,8 @@ class DevCommands:
         self.formatter.print_header(f"📊 Visualizing: {workflow_class.__name__}")
 
         # Determine workflow type
-        is_saga = hasattr(workflow_class, '_fireflytx_saga_metadata')
-        is_tcc = hasattr(workflow_class, '_fireflytx_tcc_metadata')
+        is_saga = hasattr(workflow_class, '_saga_config')
+        is_tcc = hasattr(workflow_class, '_tcc_config')
 
         if is_saga:
             self.visualize_saga(workflow_class, output_format)
@@ -170,8 +179,8 @@ class DevCommands:
 
             fmt = format_map.get(output_format.lower(), OutputFormat.ASCII)
 
-            visualizer = SagaVisualizer(saga_class)
-            output = visualizer.visualize(fmt)
+            visualizer = SagaVisualizer()
+            output = visualizer.visualize_saga(saga_class, fmt)
 
             if fmt == OutputFormat.ASCII:
                 self.formatter.console.print(output)
@@ -207,8 +216,8 @@ class DevCommands:
 
             fmt = format_map.get(output_format.lower(), OutputFormat.ASCII)
 
-            visualizer = TccVisualizer(tcc_class)
-            output = visualizer.visualize(fmt)
+            visualizer = TccVisualizer()
+            output = visualizer.visualize_tcc(tcc_class, fmt)
 
             if fmt == OutputFormat.ASCII:
                 self.formatter.console.print(output)
