@@ -22,15 +22,22 @@ class TestShellExamples:
     def mock_shell(self):
         """Create a mock shell for testing."""
         shell = Mock(spec=FireflyTXShell)
-        shell.formatter = ShellFormatter(use_rich=False)
+
+        # Create formatter with console attribute
+        formatter = ShellFormatter(use_rich=True)
+        # Add a mock console if rich is not available
+        if not hasattr(formatter, 'console'):
+            formatter.console = Mock()
+        shell.formatter = formatter
+
         shell.session = Mock()
         shell.session.saga_engine = None
         shell.session.tcc_engine = None
-        
+
         # Create a mock namespace for exec
         shell.context = Mock()
         shell.context.get_namespace = Mock(return_value={})
-        
+
         return shell
 
     @pytest.fixture

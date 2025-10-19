@@ -264,84 +264,66 @@ notification_service = NotificationService()
 class MoneyTransferTcc:
     """Money transfer TCC transaction."""
 
-    @tcc_participant("debit-source")
+    @tcc_participant("debit-source", order=1)
     class DebitSourceParticipant:
 
         @try_method
-        async def try_debit(
-            self, context: TccContext, transfer_data: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def try_debit(self, data: Dict[str, Any]) -> Dict[str, Any]:
             """Try to debit from source account."""
             return await account_service.try_debit(
-                transfer_data["from_account"], transfer_data["amount"], context.correlation_id
+                data["from_account"], data["amount"], "correlation-id"
             )
 
         @confirm_method
-        async def confirm_debit(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def confirm_debit(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Confirm debit from source account."""
             return await account_service.confirm_debit(try_result["reservation_id"])
 
         @cancel_method
-        async def cancel_debit(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def cancel_debit(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Cancel debit from source account."""
             return await account_service.cancel_debit(try_result["reservation_id"])
 
-    @tcc_participant("credit-destination")
+    @tcc_participant("credit-destination", order=2)
     class CreditDestinationParticipant:
 
         @try_method
-        async def try_credit(
-            self, context: TccContext, transfer_data: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def try_credit(self, data: Dict[str, Any]) -> Dict[str, Any]:
             """Try to credit destination account."""
             return await account_service.try_credit(
-                transfer_data["to_account"], transfer_data["amount"], context.correlation_id
+                data["to_account"], data["amount"], "correlation-id"
             )
 
         @confirm_method
-        async def confirm_credit(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def confirm_credit(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Confirm credit to destination account."""
             return await account_service.confirm_credit(try_result["reservation_id"])
 
         @cancel_method
-        async def cancel_credit(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def cancel_credit(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Cancel credit to destination account."""
             return await account_service.cancel_credit(try_result["reservation_id"])
 
-    @tcc_participant("send-notification")
+    @tcc_participant("send-notification", order=3)
     class NotificationParticipant:
 
         @try_method
-        async def try_notification(
-            self, context: TccContext, transfer_data: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def try_notification(self, data: Dict[str, Any]) -> Dict[str, Any]:
             """Prepare transfer notification."""
-            message = f"Transfer of {transfer_data['amount']} from {transfer_data['from_account']} to {transfer_data['to_account']}"
+            message = f"Transfer of {data['amount']} from {data['from_account']} to {data['to_account']}"
             return await notification_service.try_send_notification(
-                transfer_data["user_id"], message, context.correlation_id
+                data["user_id"], message, "correlation-id"
             )
 
         @confirm_method
-        async def confirm_notification(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def confirm_notification(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Send the transfer notification."""
             return await notification_service.confirm_send_notification(
                 try_result["notification_id"]
             )
 
         @cancel_method
-        async def cancel_notification(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def cancel_notification(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Cancel the transfer notification."""
             return await notification_service.cancel_send_notification(
                 try_result["notification_id"]
@@ -352,29 +334,23 @@ class MoneyTransferTcc:
 class AccountDepositTcc:
     """Simple account deposit TCC transaction."""
 
-    @tcc_participant("credit-account")
+    @tcc_participant("credit-account", order=1)
     class CreditAccountParticipant:
 
         @try_method
-        async def try_credit(
-            self, context: TccContext, deposit_data: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def try_credit(self, data: Dict[str, Any]) -> Dict[str, Any]:
             """Try to credit account."""
             return await account_service.try_credit(
-                deposit_data["account_id"], deposit_data["amount"], context.correlation_id
+                data["account_id"], data["amount"], "correlation-id"
             )
 
         @confirm_method
-        async def confirm_credit(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def confirm_credit(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Confirm credit to account."""
             return await account_service.confirm_credit(try_result["reservation_id"])
 
         @cancel_method
-        async def cancel_credit(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def cancel_credit(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Cancel credit to account."""
             return await account_service.cancel_credit(try_result["reservation_id"])
 
@@ -383,49 +359,39 @@ class AccountDepositTcc:
 class FailingTcc:
     """TCC that fails during confirm phase to test rollback."""
 
-    @tcc_participant("participant1")
+    @tcc_participant("participant1", order=1)
     class Participant1:
 
         @try_method
-        async def try_action(self, context: TccContext, data: Dict[str, Any]) -> Dict[str, Any]:
+        async def try_action(self, data: Dict[str, Any]) -> Dict[str, Any]:
             """Try action that succeeds."""
-            context.set_data("participant1_tried", True)
             return {"status": "TRY_SUCCEEDED", "participant": "participant1"}
 
         @confirm_method
-        async def confirm_action(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def confirm_action(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Confirm action that succeeds."""
             return {"status": "CONFIRMED", "participant": "participant1"}
 
         @cancel_method
-        async def cancel_action(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def cancel_action(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Cancel action."""
             return {"status": "CANCELED", "participant": "participant1"}
 
-    @tcc_participant("participant2")
+    @tcc_participant("participant2", order=2)
     class Participant2:
 
         @try_method
-        async def try_action(self, context: TccContext, data: Dict[str, Any]) -> Dict[str, Any]:
+        async def try_action(self, data: Dict[str, Any]) -> Dict[str, Any]:
             """Try action that succeeds."""
-            context.set_data("participant2_tried", True)
             return {"status": "TRY_SUCCEEDED", "participant": "participant2"}
 
         @confirm_method
-        async def confirm_action(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def confirm_action(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Confirm action that fails."""
             raise RuntimeError("Participant2 confirm always fails")
 
         @cancel_method
-        async def cancel_action(
-            self, context: TccContext, try_result: Dict[str, Any]
-        ) -> Dict[str, Any]:
+        async def cancel_action(self, data: Dict[str, Any], try_result: Dict[str, Any]) -> Dict[str, Any]:
             """Cancel action."""
             return {"status": "CANCELED", "participant": "participant2"}
 

@@ -24,7 +24,7 @@ from typing import Dict, Any, List
 from datetime import datetime, timezone
 
 from fireflytx import TccEngine
-from fireflytx.decorators import tcc, tcc_participant
+from fireflytx.decorators import tcc, tcc_participant, try_method, confirm_method, cancel_method
 
 logger = logging.getLogger(__name__)
 
@@ -70,32 +70,41 @@ class TestTryPhaseFailures:
 
         @tcc("try-failure-test")
         class TryFailureTcc:
-            @tcc_participant("participant1")
-            async def try_participant1(self, amount: float):
-                tcc_tracker["try_calls"].append("participant1")
-                return {"locked": True, "amount": amount}
+            @tcc_participant("participant1", order=1)
+            class Participant1:
+                @try_method
+                async def try_participant1(self, data: dict):
+                    tcc_tracker["try_calls"].append("participant1")
+                    amount = data.get("amount", 0.0)
+                    return {"locked": True, "amount": amount}
 
-            async def confirm_participant1(self, amount: float):
-                tcc_tracker["confirm_calls"].append("participant1")
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_participant1(self, data: dict, try_result: dict):
+                    tcc_tracker["confirm_calls"].append("participant1")
+                    return {"confirmed": True}
 
-            async def cancel_participant1(self, amount: float):
-                tcc_tracker["cancel_calls"].append("participant1")
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_participant1(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("participant1")
+                    return {"cancelled": True}
 
-            @tcc_participant("participant2")
-            async def try_participant2(self, amount: float):
-                tcc_tracker["try_calls"].append("participant2")
-                # Simulate Try failure
-                raise Exception("Insufficient resources for participant2")
+            @tcc_participant("participant2", order=2)
+            class Participant2:
+                @try_method
+                async def try_participant2(self, data: dict):
+                    tcc_tracker["try_calls"].append("participant2")
+                    # Simulate Try failure
+                    raise Exception("Insufficient resources for participant2")
 
-            async def confirm_participant2(self, amount: float):
-                tcc_tracker["confirm_calls"].append("participant2")
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_participant2(self, data: dict, try_result: dict):
+                    tcc_tracker["confirm_calls"].append("participant2")
+                    return {"confirmed": True}
 
-            async def cancel_participant2(self, amount: float):
-                tcc_tracker["cancel_calls"].append("participant2")
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_participant2(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("participant2")
+                    return {"cancelled": True}
 
         result = await tcc_engine.execute(
             TryFailureTcc,
@@ -154,23 +163,27 @@ class TestConfirmPhaseIdempotency:
 
         @tcc("confirm-idempotency-test")
         class ConfirmIdempotencyTcc:
-            def __init__(self):
-                self.confirm_count = 0
+            @tcc_participant("idempotent_participant", order=1)
+            class IdempotentParticipant:
+                def __init__(self):
+                    self.confirm_count = 0
 
-            @tcc_participant("idempotent_participant")
-            async def try_participant(self, amount: float):
-                tcc_tracker["try_calls"].append("idempotent_participant")
-                return {"locked": True, "lock_id": "LOCK-123"}
+                @try_method
+                async def try_participant(self, data: dict):
+                    tcc_tracker["try_calls"].append("idempotent_participant")
+                    return {"locked": True, "lock_id": "LOCK-123"}
 
-            async def confirm_participant(self, amount: float):
-                self.confirm_count += 1
-                tcc_tracker["confirm_calls"].append(f"confirm_{self.confirm_count}")
-                # Idempotent - can be called multiple times
-                return {"confirmed": True, "confirm_count": self.confirm_count}
+                @confirm_method
+                async def confirm_participant(self, data: dict, try_result: dict):
+                    self.confirm_count += 1
+                    tcc_tracker["confirm_calls"].append(f"confirm_{self.confirm_count}")
+                    # Idempotent - can be called multiple times
+                    return {"confirmed": True, "confirm_count": self.confirm_count}
 
-            async def cancel_participant(self, amount: float):
-                tcc_tracker["cancel_calls"].append("idempotent_participant")
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_participant(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("idempotent_participant")
+                    return {"cancelled": True}
 
         result = await tcc_engine.execute(
             ConfirmIdempotencyTcc,
@@ -251,45 +264,59 @@ class TestPartialParticipantFailures:
 
         @tcc("partial-failure-test")
         class PartialFailureTcc:
-            @tcc_participant("participant_a")
-            async def try_a(self, amount: float):
-                tcc_tracker["try_calls"].append("participant_a")
-                return {"locked": True, "amount": amount}
+            @tcc_participant("participant_a", order=1)
+            class ParticipantA:
+                @try_method
+                async def try_a(self, data: dict):
+                    tcc_tracker["try_calls"].append("participant_a")
+                    amount = data.get("amount", 0.0)
+                    return {"locked": True, "amount": amount}
 
-            async def confirm_a(self, amount: float):
-                tcc_tracker["confirm_calls"].append("participant_a")
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_a(self, data: dict, try_result: dict):
+                    tcc_tracker["confirm_calls"].append("participant_a")
+                    return {"confirmed": True}
 
-            async def cancel_a(self, amount: float):
-                tcc_tracker["cancel_calls"].append("participant_a")
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_a(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("participant_a")
+                    return {"cancelled": True}
 
-            @tcc_participant("participant_b")
-            async def try_b(self, amount: float):
-                tcc_tracker["try_calls"].append("participant_b")
-                return {"locked": True, "amount": amount}
+            @tcc_participant("participant_b", order=2)
+            class ParticipantB:
+                @try_method
+                async def try_b(self, data: dict):
+                    tcc_tracker["try_calls"].append("participant_b")
+                    amount = data.get("amount", 0.0)
+                    return {"locked": True, "amount": amount}
 
-            async def confirm_b(self, amount: float):
-                tcc_tracker["confirm_calls"].append("participant_b")
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_b(self, data: dict, try_result: dict):
+                    tcc_tracker["confirm_calls"].append("participant_b")
+                    return {"confirmed": True}
 
-            async def cancel_b(self, amount: float):
-                tcc_tracker["cancel_calls"].append("participant_b")
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_b(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("participant_b")
+                    return {"cancelled": True}
 
-            @tcc_participant("participant_c")
-            async def try_c(self, amount: float):
-                tcc_tracker["try_calls"].append("participant_c")
-                # Fail this participant
-                raise Exception("Participant C failed")
+            @tcc_participant("participant_c", order=3)
+            class ParticipantC:
+                @try_method
+                async def try_c(self, data: dict):
+                    tcc_tracker["try_calls"].append("participant_c")
+                    # Fail this participant
+                    raise Exception("Participant C failed")
 
-            async def confirm_c(self, amount: float):
-                tcc_tracker["confirm_calls"].append("participant_c")
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_c(self, data: dict, try_result: dict):
+                    tcc_tracker["confirm_calls"].append("participant_c")
+                    return {"confirmed": True}
 
-            async def cancel_c(self, amount: float):
-                tcc_tracker["cancel_calls"].append("participant_c")
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_c(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("participant_c")
+                    return {"cancelled": True}
 
         result = await tcc_engine.execute(
             PartialFailureTcc,
@@ -323,37 +350,49 @@ class TestResourceLockManagement:
 
         @tcc("resource-lock-test")
         class ResourceLockTcc:
-            @tcc_participant("inventory")
-            async def try_inventory(self, quantity: int):
-                tcc_tracker["try_calls"].append("inventory")
-                resource_locks["inventory"] += quantity
-                return {"locked": quantity}
+            @tcc_participant("inventory", order=1)
+            class InventoryParticipant:
+                @try_method
+                async def try_inventory(self, data: dict):
+                    tcc_tracker["try_calls"].append("inventory")
+                    quantity = data.get("quantity", 0)
+                    resource_locks["inventory"] += quantity
+                    return {"locked": quantity}
 
-            async def confirm_inventory(self, quantity: int):
-                tcc_tracker["confirm_calls"].append("inventory")
-                # Keep the lock
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_inventory(self, data: dict, try_result: dict):
+                    tcc_tracker["confirm_calls"].append("inventory")
+                    # Keep the lock
+                    return {"confirmed": True}
 
-            async def cancel_inventory(self, quantity: int):
-                tcc_tracker["cancel_calls"].append("inventory")
-                # Release the lock
-                resource_locks["inventory"] -= quantity
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_inventory(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("inventory")
+                    # Release the lock
+                    quantity = try_result.get("locked", 0)
+                    resource_locks["inventory"] -= quantity
+                    return {"cancelled": True}
 
-            @tcc_participant("payment")
-            async def try_payment(self, amount: float):
-                tcc_tracker["try_calls"].append("payment")
-                resource_locks["payment"] += amount
-                # Fail to trigger cancel
-                raise Exception("Payment gateway unavailable")
+            @tcc_participant("payment", order=2)
+            class PaymentParticipant:
+                @try_method
+                async def try_payment(self, data: dict):
+                    tcc_tracker["try_calls"].append("payment")
+                    amount = data.get("amount", 0.0)
+                    resource_locks["payment"] += amount
+                    # Fail to trigger cancel
+                    raise Exception("Payment gateway unavailable")
 
-            async def confirm_payment(self, amount: float):
-                return {"confirmed": True}
+                @confirm_method
+                async def confirm_payment(self, data: dict, try_result: dict):
+                    return {"confirmed": True}
 
-            async def cancel_payment(self, amount: float):
-                tcc_tracker["cancel_calls"].append("payment")
-                resource_locks["payment"] -= amount
-                return {"cancelled": True}
+                @cancel_method
+                async def cancel_payment(self, data: dict, try_result: dict):
+                    tcc_tracker["cancel_calls"].append("payment")
+                    amount = data.get("amount", 0.0)
+                    resource_locks["payment"] -= amount
+                    return {"cancelled": True}
 
         result = await tcc_engine.execute(
             ResourceLockTcc,
@@ -362,7 +401,7 @@ class TestResourceLockManagement:
                 "payment": {"amount": 100.0}
             }
         )
-        
+
         assert not result.is_success
         # Verify locks were released
         assert resource_locks["inventory"] == 0
