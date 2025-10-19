@@ -60,16 +60,16 @@ FireflyTX is a **Python wrapper** for the enterprise-grade Java library `lib-tra
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  FireflyTX Python Package                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   Engines    │  │  Decorators  │  │     Core     │      │
-│  │ SagaEngine   │  │    @saga     │  │   Types &    │      │
-│  │  TccEngine   │  │  @saga_step  │  │   Context    │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Integration  │  │    Config    │  │    Events    │      │
-│  │    Bridge    │  │  Management  │  │ Persistence  │      │
-│  │  Callbacks   │  │              │  │   Logging    │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │   Engines    │  │  Decorators  │  │     Core     │       │
+│  │ SagaEngine   │  │    @saga     │  │   Types &    │       │
+│  │  TccEngine   │  │  @saga_step  │  │   Context    │       │
+│  └──────────────┘  └──────────────┘  └──────────────┘       │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │ Integration  │  │    Config    │  │    Events    │       │
+│  │    Bridge    │  │  Management  │  │ Persistence  │       │
+│  │  Callbacks   │  │              │  │   Logging    │       │
+│  └──────────────┘  └──────────────┘  └──────────────┘       │
 └────────────────────────┬────────────────────────────────────┘
                          │
                          ▼ IPC (JSON files + HTTP)
@@ -295,231 +295,613 @@ handler.start()  # Starts Flask server in background thread
 }
 ```
 
-### 3. Decorator System (`fireflytx/decorators/`)
+---
 
-#### SAGA Decorators (`saga.py`)
+## Python-Java Integration
 
-**@saga(name, layer_concurrency)**
+### IPC Architecture
 
-Marks a class as a SAGA transaction.
+FireflyTX uses a **dual-channel communication** model:
 
-**Metadata Attached**:
+1. **Python → Java**: JSON file-based IPC (synchronous)
+2. **Java → Python**: HTTP callbacks (asynchronous)
+
+### Request/Response Flow
+
+**Python Side** (`fireflytx/integration/bridge.py`):
+
 ```python
-cls._saga_name = "payment-processing"
-cls._saga_config = SagaConfig(
-    name="payment-processing",
-    layer_concurrency=5,
-    steps={},
-    compensation_methods={},
-    compensation_configs={}
-)
+def call_java_method(self, request: JavaClassCallRequest) -> JavaMethodResponse:
+    # 1. Generate unique request ID
+    request_id = str(uuid.uuid4())
+
+    # 2. Write request to JSON file
+    request_file = Path(self._temp_dir) / "requests" / f"{request_id}.json"
+    with open(request_file, "w") as f:
+        json.dump({
+            "requestId": request_id,
+            "className": request.class_name,
+            "methodName": request.method_name,
+            "methodType": request.method_type,
+            "args": request.args,
+            "instanceId": request.instance_id
+        }, f)
+
+    # 3. Poll for response (timeout: 30s)
+    response_file = Path(self._temp_dir) / "responses" / f"{request_id}.json"
+    start_time = time.time()
+    while time.time() - start_time < 30:
+        if response_file.exists():
+            with open(response_file, "r") as f:
+                response_data = json.load(f)
+            response_file.unlink()  # Delete response file
+            return JavaMethodResponse(
+                success=response_data["success"],
+                result=response_data.get("result"),
+                error=response_data.get("error"),
+                instance_id=response_data.get("instanceId")
+            )
+        time.sleep(0.1)
+
+    raise TimeoutError(f"No response for request {request_id}")
 ```
 
-**@saga_step(step_id, depends_on, retry, timeout_ms, ...)**
+**Java Side** (`fireflytx/integration/java_bridge/src/main/java/.../JavaSubprocessBridge.java`):
 
-Marks a method as a SAGA step.
+```java
+public void startProcessing() {
+    while (running) {
+        try {
+            processRequests();
+            Thread.sleep(100); // Poll every 100ms
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            break;
+        }
+    }
+}
 
-**Metadata Attached**:
-```python
-func._saga_step_config = SagaStepConfig(
-    step_id="validate",
-    depends_on=["previous_step"],
-    retry=3,
-    backoff_ms=1000,
-    timeout_ms=30000,
-    jitter=True,
-    jitter_factor=0.3,
-    cpu_bound=False,
-    idempotency_key=None,
-    compensate="undo_validate",
-    compensation_retry=3,
-    compensation_timeout_ms=10000,
-    compensation_critical=False,
-    events=None
-)
+private void processRequests() throws IOException {
+    File[] requestFiles = requestDir.toFile().listFiles(
+        (dir, name) -> name.endsWith(".json")
+    );
+
+    for (File requestFile : requestFiles) {
+        // 1. Read request
+        String content = Files.readString(requestFile.toPath());
+        JsonNode request = objectMapper.readTree(content);
+
+        String requestId = request.get("requestId").asText();
+        String className = request.get("className").asText();
+        String methodName = request.get("methodName").asText();
+
+        // 2. Execute method via reflection
+        Object result = executeMethod(className, methodName, ...);
+
+        // 3. Write response
+        sendSuccessResponse(requestId, result, instanceId);
+
+        // 4. Delete request file
+        requestFile.delete();
+    }
+}
 ```
 
-**@compensation_step(for_step_id, retry, timeout_ms, critical)**
+### Callback Mechanism
 
-Marks a method as a compensation step.
+**Java → Python Callback** (for SAGA step execution):
 
-**Metadata Attached**:
-```python
-func._compensation_for_step = "validate"
-func._compensation_config = CompensationStepConfig(
-    for_step_id="validate",
-    retry=3,
-    timeout_ms=10000,
-    critical=False,
-    backoff_ms=1000,
-    jitter=True,
-    jitter_factor=0.3
-)
+**Java Side** (`ReactiveCallbackClient.java`):
+
+```java
+public Mono<Map<String, Object>> executeCallbackReactive(
+    String callbackUrl,
+    String methodType,
+    String methodName,
+    String stepId,
+    Map<String, Object> inputData,
+    Map<String, Object> contextData
+) {
+    Map<String, Object> callbackRequest = new HashMap<>();
+    callbackRequest.put("method_type", methodType);
+    callbackRequest.put("method_name", methodName);
+    callbackRequest.put("step_id", stepId);
+    callbackRequest.put("input_data", inputData);
+    callbackRequest.put("context_data", contextData);
+
+    return webClient.post()
+        .uri(callbackUrl)
+        .contentType(MediaType.APPLICATION_JSON)
+        .bodyValue(callbackRequest)
+        .retrieve()
+        .bodyToMono(Map.class);
+}
 ```
 
-#### TCC Decorators (`tcc.py`)
-
-**@tcc(name, timeout_ms)**
-
-Marks a class as a TCC transaction.
-
-**Metadata Attached**:
-```python
-cls._tcc_name = "payment-processing"
-cls._tcc_config = TccConfig(
-    name="payment-processing",
-    timeout_ms=30000,
-    participants={},
-    participant_classes={}
-)
-```
-
-**@tcc_participant(participant_id, order, timeout_ms)**
-
-Marks a nested class or method as a TCC participant.
-
-**Metadata Attached**:
-```python
-cls._tcc_participant_config = TccParticipantConfig(
-    participant_id="payment",
-    order=1,
-    timeout_ms=30000,
-    try_method=None,
-    confirm_method=None,
-    cancel_method=None
-)
-```
-
-**@try_method, @confirm_method, @cancel_method**
-
-Mark methods for TCC phases.
-
-**Metadata Attached**:
-```python
-func._tcc_method_config = TccMethodConfig(
-    method_type="try",  # or "confirm", "cancel"
-    timeout_ms=30000,
-    retry=3,
-    backoff_ms=1000
-)
-```
-
-### 4. Core Types (`fireflytx/core/`)
-
-#### SagaContext (`saga_context.py`)
-
-Shared data container for SAGA execution.
+**Python Side** (`callbacks.py`):
 
 ```python
-from fireflytx.core import SagaContext
+@app.route("/callback", methods=["POST"])
+def handle_callback():
+    data = request.json
+    method_name = data["method_name"]
+    step_id = data["step_id"]
+    input_data = data["input_data"]
+    context_data = data["context_data"]
 
-context = SagaContext(correlation_id="saga-123")
-context.set_data("user_id", "user-456")
-context.set_data("order_total", 299.99)
+    # Find and execute Python method
+    step_method = getattr(saga_instance, method_name)
 
-# Access in steps
-user_id = context.get_data("user_id")
-```
+    # Reconstruct context
+    context = SagaContext(context_data["correlation_id"])
+    for key, value in context_data.get("variables", {}).items():
+        context.set_data(key, value)
 
-#### SagaResult (`saga_result.py`)
+    # Execute step
+    if asyncio.iscoroutinefunction(step_method):
+        result = asyncio.run(step_method(context, input_data))
+    else:
+        result = step_method(context, input_data)
 
-Result of SAGA execution.
-
-```python
-@dataclass
-class SagaResult:
-    success: bool
-    correlation_id: str
-    step_results: Dict[str, Any]
-    compensation_results: Dict[str, Any]
-    error: Optional[str]
-    failed_step: Optional[str]
-```
-
-#### TccResult (`tcc_result.py`)
-
-Result of TCC execution.
-
-```python
-@dataclass
-class TccResult:
-    success: bool
-    correlation_id: str
-    final_phase: str  # "CONFIRMED" or "CANCELLED"
-    participant_results: Dict[str, Any]
-    error: Optional[str]
-    failed_participant: Optional[str]
+    return jsonify({
+        "success": True,
+        "result": result,
+        "context_updates": context.to_dict()
+    })
 ```
 
 ---
 
-## Development Setup
+## Engine Internals
 
-### Prerequisites
+### SagaEngine Execution Flow
 
-- **Python**: 3.9+ (3.11+ recommended)
-- **Java**: JDK 17+ (JDK 21 recommended)
-- **Maven**: 3.8+ (for building Java bridge)
-- **Git**: For version control
-
-### Clone Repository
-
-```bash
-git clone https://github.com/firefly-oss/python-transactional-engine.git
-cd python-transactional-engine
+```
+1. Python: engine.execute(MySaga, input_data)
+   │
+   ├─> 2. Python: register_saga(MySaga)
+   │    │
+   │    ├─> Extract metadata from decorators
+   │    ├─> Build registration_data dict
+   │    └─> IPC call: SagaEngine.registerSaga(name, registration_data)
+   │
+   ├─> 3. Java: SagaEngine.registerSaga()
+   │    │
+   │    ├─> Validate SAGA structure
+   │    ├─> Create SagaDefinition
+   │    └─> Store in registry
+   │
+   ├─> 4. Python: Start callback server
+   │    │
+   │    └─> PythonCallbackHandler.start() on port 8765
+   │
+   ├─> 5. Python: IPC call: SagaEngine.execute(name, inputs, context)
+   │    │
+   │    └─> Pass callback_url: http://localhost:8765/callback
+   │
+   ├─> 6. Java: SagaEngine.execute()
+   │    │
+   │    ├─> Build execution DAG from dependencies
+   │    ├─> Execute steps in topological order
+   │    │
+   │    └─> For each step:
+   │         │
+   │         ├─> 7. Java: HTTP POST to callback_url
+   │         │    │
+   │         │    └─> {method_name, step_id, input_data, context_data}
+   │         │
+   │         ├─> 8. Python: Execute business logic
+   │         │    │
+   │         │    └─> Return {success, result, context_updates}
+   │         │
+   │         ├─> 9. Java: Handle result
+   │         │    │
+   │         │    ├─> If success: Continue to next step
+   │         │    └─> If failure: Trigger compensation
+   │         │
+   │         └─> Retry logic, timeout handling
+   │
+   ├─> 10. Java: Return SagaResult
+   │
+   └─> 11. Python: Return SagaResult to caller
 ```
 
-### Install Dependencies
+### TccEngine Execution Flow
 
-```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install in development mode
-pip install -e ".[dev]"
-
-# Install pre-commit hooks
-pre-commit install
+```
+1. Python: engine.execute(MyTcc, input_data)
+   │
+   ├─> 2. Python: Extract TCC definition from decorators
+   │    │
+   │    └─> Build participant list with try/confirm/cancel methods
+   │
+   ├─> 3. Python: Start TCC callback server
+   │    │
+   │    └─> TccCallbackHandler.start() on port 8766
+   │
+   ├─> 4. Python: IPC call: executeTcc(name, inputs, callback_info)
+   │    │
+   │    └─> Pass callback_endpoint: http://localhost:8766/tcc_callback
+   │
+   ├─> 5. Java: Execute TRY phase
+   │    │
+   │    └─> For each participant (in order):
+   │         │
+   │         ├─> HTTP POST to callback_endpoint
+   │         │    {phase: "TRY", participant_id, method_name, input_data}
+   │         │
+   │         ├─> Python: Execute try_method
+   │         │
+   │         └─> If any fails: Go to CANCEL phase
+   │
+   ├─> 6. Java: Execute CONFIRM or CANCEL phase
+   │    │
+   │    └─> For each participant (reverse order for CANCEL):
+   │         │
+   │         ├─> HTTP POST to callback_endpoint
+   │         │    {phase: "CONFIRM"/"CANCEL", participant_id, method_name}
+   │         │
+   │         └─> Python: Execute confirm_method or cancel_method
+   │
+   └─> 7. Java: Return TccResult
+        │
+        └─> Python: Return TccResult to caller
 ```
 
-### Build Java Bridge (Optional)
+---
 
-The Java bridge JAR is pre-built and included in `fireflytx/integration/java_bridge/target/`. To rebuild:
+## Decorator System
 
-```bash
-cd fireflytx/integration/java_bridge
-mvn clean package
+### How Decorators Work
+
+Decorators attach metadata to classes and methods that is later extracted by the engine.
+
+**Example SAGA**:
+
+```python
+@saga("payment-processing")
+class PaymentSaga:
+
+    @saga_step("validate", retry=3, timeout_ms=5000)
+    async def validate_payment(self, ctx, input_data):
+        return {"validated": True}
+
+    @saga_step("charge", depends_on=["validate"], compensate="refund")
+    async def charge_payment(self, ctx, input_data):
+        return {"charged": True, "tx_id": "123"}
+
+    @compensation_step("charge", critical=True)
+    async def refund(self, ctx, charge_result):
+        # Refund logic
+        pass
 ```
 
-### Run Tests
+**Metadata Extraction**:
+
+```python
+# After decoration, the class has:
+PaymentSaga._saga_name = "payment-processing"
+PaymentSaga._saga_config = SagaConfig(
+    name="payment-processing",
+    layer_concurrency=5,
+    steps={
+        "validate": SagaStepConfig(
+            step_id="validate",
+            depends_on=[],
+            retry=3,
+            timeout_ms=5000,
+            ...
+        ),
+        "charge": SagaStepConfig(
+            step_id="charge",
+            depends_on=["validate"],
+            compensate="refund",
+            ...
+        )
+    },
+    compensation_methods={
+        "charge": "refund"
+    },
+    compensation_configs={
+        "charge": CompensationStepConfig(
+            for_step_id="charge",
+            critical=True,
+            ...
+        )
+    }
+)
+```
+
+**Registration with Java**:
+
+```python
+async def register_saga(self, saga_class: type) -> None:
+    config = saga_class._saga_config
+
+    registration_data = {
+        "name": config.name,
+        "layerConcurrency": config.layer_concurrency,
+        "steps": [
+            {
+                "stepId": step.step_id,
+                "dependsOn": step.depends_on,
+                "retry": step.retry,
+                "backoffMs": step.backoff_ms,
+                "timeoutMs": step.timeout_ms,
+                "compensate": step.compensate,
+                "compensationRetry": step.compensation_retry,
+                "compensationTimeoutMs": step.compensation_timeout_ms,
+                "compensationCritical": step.compensation_critical,
+                ...
+            }
+            for step in config.steps.values()
+        ]
+    }
+
+    # Send to Java
+    response = self._java_bridge.call_java_method(
+        JavaClassCallRequest(
+            class_name="com.firefly.transactional.saga.engine.SagaEngine",
+            method_name="registerSaga",
+            method_type="instance",
+            instance_id=self._saga_engine_id,
+            args=[config.name, registration_data]
+        )
+    )
+```
+
+---
+
+## Testing & Debugging
+
+### Unit Testing
+
+```python
+import pytest
+from fireflytx import SagaEngine
+from fireflytx.decorators import saga, saga_step
+
+@saga("test-saga")
+class TestSaga:
+    @saga_step("step1")
+    async def step1(self, ctx, input_data):
+        return {"result": "step1"}
+
+@pytest.mark.asyncio
+async def test_saga_execution():
+    engine = SagaEngine()
+    await engine.initialize()
+
+    try:
+        result = await engine.execute(TestSaga, {"input": "test"})
+        assert result.success
+        assert "step1" in result.step_results
+    finally:
+        await engine.shutdown()
+```
+
+### Debugging Java Subprocess
+
+**Enable Java Debug Logging**:
+
+```python
+from fireflytx.config import JvmConfig, EngineConfig
+
+jvm_config = JvmConfig(
+    heap_size="2g",
+    enable_gc_logging=True,
+    gc_log_file="/tmp/fireflytx_gc.log",
+    additional_args=[
+        "-Dlogging.level.com.firefly=DEBUG",
+        "-Dlogging.level.root=INFO"
+    ]
+)
+
+engine = SagaEngine(config=EngineConfig(jvm=jvm_config))
+```
+
+**View Java Logs**:
 
 ```bash
-# Run all tests
-pytest
+# Logs are streamed to Python logger
+tail -f /tmp/fireflytx_java.log
 
-# Run with coverage
-pytest --cov=fireflytx --cov-report=html
-
-# Run specific test file
-pytest tests/test_saga.py
-
-# Run with verbose output
-pytest -v -s
+# Or use shell
+python -m fireflytx.shell
+> java-logs
 ```
 
 ### Interactive Shell
 
 ```bash
-# Launch FireflyTX shell
 python -m fireflytx.shell
+```
 
-# Or use CLI
-fireflytx shell
+**Available Commands**:
+- `init-engines` - Initialize SAGA and TCC engines
+- `run-saga-example` - Run example SAGA
+- `run-tcc-example` - Run example TCC
+- `java-logs` - View Java subprocess logs
+- `process-info` - Show Java process information
+- `help` - Show all commands
+
+---
+
+## Contributing Guidelines
+
+### Code Style
+
+- **Python**: Follow PEP 8, use `black` for formatting
+- **Type Hints**: Required for all public APIs
+- **Docstrings**: Google style for all public functions/classes
+- **Java**: Follow Google Java Style Guide
+
+### Pull Request Process
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make changes with tests
+4. Run tests: `pytest`
+5. Run linters: `black . && flake8 && mypy fireflytx`
+6. Commit with conventional commits: `feat: add new feature`
+7. Push and create PR
+
+### Testing Requirements
+
+- Unit tests for all new features
+- Integration tests for engine changes
+- Minimum 80% code coverage
+- All tests must pass in CI
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+**1. Java subprocess fails to start**
+
+```
+Error: Java process exited immediately
+```
+
+**Solution**: Check Java version and classpath
+```bash
+java -version  # Should be 17+
+ls fireflytx/deps/*.jar  # Should contain lib-transactional-engine JARs
+```
+
+**2. Callback connection refused**
+
+```
+Error: Connection refused to http://localhost:8765/callback
+```
+
+**Solution**: Ensure callback server started
+```python
+# Check if handler is running
+if handler and handler.is_running():
+    print("Callback server running")
+```
+
+**3. IPC timeout**
+
+```
+TimeoutError: No response for request abc-123
+```
+
+**Solution**: Check Java process is alive
+```python
+if bridge.process and bridge.process.poll() is None:
+    print("Java process running")
+else:
+    print("Java process died - check logs")
+```
+
+### Debug Checklist
+
+- [ ] Java 17+ installed
+- [ ] All JARs present in `fireflytx/deps/`
+- [ ] Python 3.9+ with all dependencies
+- [ ] No port conflicts (8765, 8766)
+- [ ] Sufficient memory (2GB+ heap)
+- [ ] Check Java logs for errors
+- [ ] Verify decorator metadata attached correctly
+
+---
+
+## Module Reference
+
+### Directory Structure
+
+```
+fireflytx/
+├── __init__.py              # Public API exports
+├── cli.py                   # CLI entrypoint
+│
+├── engine/                  # Engine wrappers
+│   ├── saga_engine.py       # SagaEngine
+│   └── tcc_engine.py        # TccEngine
+│
+├── decorators/              # Decorators
+│   ├── saga.py              # @saga, @saga_step, @compensation_step
+│   └── tcc.py               # @tcc, @tcc_participant, @try_method, etc.
+│
+├── core/                    # Core types
+│   ├── saga_context.py      # SagaContext
+│   ├── saga_result.py       # SagaResult
+│   ├── step_inputs.py       # StepInputs
+│   ├── tcc_context.py       # TccContext
+│   ├── tcc_inputs.py        # TccInputs
+│   └── tcc_result.py        # TccResult
+│
+├── integration/             # Python-Java bridge
+│   ├── bridge.py            # JavaSubprocessBridge
+│   ├── callbacks.py         # PythonCallbackHandler (SAGA)
+│   ├── tcc_callbacks.py     # TccCallbackHandler (TCC)
+│   ├── type_conversion.py   # TypeConverter
+│   ├── jar_builder.py       # JAR building utilities
+│   └── java_bridge/         # Java source code
+│       ├── src/main/java/com/firefly/transactional/
+│       │   ├── BridgeApplication.java
+│       │   ├── JavaSubprocessBridge.java
+│       │   └── ReactiveCallbackClient.java
+│       └── pom.xml
+│
+├── config/                  # Configuration
+│   ├── engine_config.py     # EngineConfig, JvmConfig, etc.
+│   ├── event_config.py      # EventConfig
+│   ├── persistence_config.py # PersistenceConfig
+│   └── java_config_generator.py # Python → Java config
+│
+├── events/                  # Event publishing
+│   ├── event_publisher.py   # StepEventPublisher interface
+│   ├── saga_events.py       # SAGA event types
+│   └── tcc_events.py        # TCC event types
+│
+├── persistence/             # State persistence
+│   ├── saga_persistence.py  # SagaPersistenceProvider
+│   └── tcc_persistence.py   # TccPersistenceProvider
+│
+├── logging/                 # Logging
+│   ├── manager.py           # Logging manager
+│   ├── json_formatter.py    # JSON log formatting
+│   ├── log_viewer.py        # Rich log viewer
+│   └── java_log_bridge.py   # Java log integration
+│
+├── visualization/           # Graph rendering
+│   ├── graph_renderer.py    # Graph rendering utilities
+│   ├── saga_visualizer.py   # SAGA visualization
+│   └── tcc_visualizer.py    # TCC visualization
+│
+├── shell/                   # Interactive shell
+│   ├── __main__.py          # Shell entry point
+│   ├── commands/            # Shell commands
+│   ├── core/                # Shell core
+│   ├── ui/                  # Shell UI components
+│   └── utils/               # Shell utilities
+│
+├── utils/                   # Utilities
+│   ├── dependency_installer.py # Auto-install dependencies
+│   ├── helpers.py           # General helpers
+│   └── logging.py           # Logging utilities
+│
+├── deps/                    # Java JAR dependencies
+│   └── *.jar                # lib-transactional-engine JARs
+│
+├── internal/                # Internal implementation details
+│   └── engine/              # Re-exports engines for public API
+│
+└── callbacks/               # Legacy (deprecated)
+    └── __init__.py
 ```
 
 ---
 
-## Python-Java Integration
-
+**For more information**:
+- [Architecture Guide](architecture.md)
+- [SAGA Pattern Guide](saga-pattern.md)
+- [TCC Pattern Guide](tcc-pattern.md)
+- [API Reference](api-reference.md)
+- [Project Structure](project-structure.md)
 

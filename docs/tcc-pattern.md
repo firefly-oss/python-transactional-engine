@@ -1410,7 +1410,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 # Check which participant is hanging
-result = await engine.execute(MyTcc, data, timeout_ms=30000)
+result = await engine.execute(MyTcc, data)
 print(f"Failed at: {result.failed_participant}")
 ```
 

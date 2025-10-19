@@ -464,7 +464,7 @@ async def main():
     }
 
     # Execute SAGA by class
-    result = await engine.execute_by_class(
+    result = await engine.execute(
         OrderProcessingSaga,
         order_data
     )
@@ -908,11 +908,12 @@ async def test_validate_order_missing_customer():
 ```python
 @pytest.mark.asyncio
 async def test_order_saga_success():
-    engine = create_saga_engine()
+    engine = SagaEngine()
+    await engine.initialize()
 
     order_data = create_valid_order()
 
-    result = await engine.execute_saga_class(OrderProcessingSaga, order_data)
+    result = await engine.execute(OrderProcessingSaga, order_data)
 
     assert result.is_success
     assert len(result.steps) == 4
@@ -920,12 +921,13 @@ async def test_order_saga_success():
 
 @pytest.mark.asyncio
 async def test_order_saga_payment_failure():
-    engine = create_saga_engine()
+    engine = SagaEngine()
+    await engine.initialize()
 
     # Order that will fail at payment
     order_data = create_order_with_invalid_payment()
 
-    result = await engine.execute_saga_class(OrderProcessingSaga, order_data)
+    result = await engine.execute(OrderProcessingSaga, order_data)
 
     assert not result.is_success
     assert result.failed_step == "charge-payment"
@@ -1115,7 +1117,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 # Check which step is hanging
-result = await engine.execute_saga_class(MySaga, data, timeout_ms=30000)
+result = await engine.execute(MySaga, data)
 ```
 
 **Common Causes:**
@@ -1165,7 +1167,7 @@ result = await engine.execute_saga_class(MySaga, data, timeout_ms=30000)
 
 ```python
 # Check result
-result = await engine.execute_saga_class(MySaga, data)
+result = await engine.execute(MySaga, data)
 print(f"Failed step: {result.failed_step}")
 print(f"Compensated steps: {result.compensated_steps}")
 ```
@@ -1390,7 +1392,7 @@ booking_data = {
     "customer_id": "CUST-123"
 }
 
-result = await engine.execute_saga_class(TravelBookingSaga, booking_data)
+result = await engine.execute(TravelBookingSaga, booking_data)
 
 if result.is_success:
     print("✅ Travel package booked!")

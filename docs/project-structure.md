@@ -64,17 +64,21 @@ FireflyTX follows a **feature-oriented architecture** with clear separation of c
 ```
 python-transactional-engine/
 ├── fireflytx/              # Core Python package (runtime code)
-│   ├── api/                # High-level API facade
+│   ├── callbacks/          # Legacy callback stubs (deprecated)
+│   ├── config/             # Configuration management
 │   ├── core/               # Core types and contexts
 │   ├── decorators/         # @saga, @tcc decorators
-│   ├── engine/             # Engine wrappers
-│   ├── integration/        # Python-Java bridge (NEW!)
-│   ├── config/             # Configuration management
+│   ├── deps/               # Java JAR dependencies (lib-transactional-engine)
+│   ├── engine/             # Engine wrappers (SagaEngine, TccEngine)
 │   ├── events/             # Event publishing
-│   ├── persistence/        # State persistence
+│   ├── integration/        # Python-Java bridge & callbacks
+│   ├── internal/           # Internal implementation details
 │   ├── logging/            # Logging infrastructure
-│   ├── visualization/      # Graph rendering
+│   ├── persistence/        # State persistence
+│   ├── shell/              # Interactive FireflyTX shell
 │   ├── utils/              # Utilities
+│   ├── visualization/      # Graph rendering
+│   ├── __init__.py         # Public API exports
 │   └── cli.py              # CLI entrypoint
 │
 ├── docs/                   # Documentation
@@ -82,6 +86,7 @@ python-transactional-engine/
 │   ├── saga-pattern.md     # SAGA pattern guide
 │   ├── tcc-pattern.md      # TCC pattern guide
 │   ├── configuration.md    # Configuration guide
+│   ├── api-reference.md    # API reference
 │   ├── developers-guide.md # Developer documentation
 │   └── project-structure.md # This file
 │
@@ -92,9 +97,9 @@ python-transactional-engine/
 │   └── test_utils.py       # Utility tests
 │
 ├── examples/               # Example applications
-│   ├── saga/               # SAGA examples
-│   ├── tcc/                # TCC examples
-│   └── advanced/           # Advanced patterns
+│   ├── complete_integration_example.py
+│   ├── saga_basic.py
+│   └── tcc_basic.py
 │
 ├── README.md               # Project overview
 ├── INSTALL.md              # Installation guide
@@ -114,9 +119,15 @@ fireflytx/
 │
 ├── __init__.py             # Public API exports
 │
-├── api/                    # 🎯 High-Level API (Start Here!)
+├── engine/                 # 🎯 Engine Wrappers (Main Entry Point!)
 │   ├── __init__.py
-│   └── saga_executor.py    # SagaExecutionEngine, create_saga_engine()
+│   ├── saga_engine.py      # SagaEngine - Main SAGA engine wrapper
+│   └── tcc_engine.py       # TccEngine - Main TCC engine wrapper
+│
+├── decorators/             # 🎨 Decorators for Transaction Definition
+│   ├── __init__.py
+│   ├── saga.py             # @saga, @saga_step, @compensation_step
+│   └── tcc.py              # @tcc, @tcc_participant, @try_method, etc.
 │
 ├── core/                   # 📦 Core Types & Contexts
 │   ├── __init__.py
@@ -188,11 +199,37 @@ fireflytx/
 │   ├── helpers.py          # General helpers
 │   └── logging.py          # Logging utilities
 │
+├── shell/                  # 🖥️ Interactive FireflyTX Shell
+│   ├── __init__.py
+│   ├── __main__.py         # Shell entry point
+│   ├── commands/           # Shell commands
+│   │   ├── dev_commands.py
+│   │   ├── engine_commands.py
+│   │   ├── examples.py
+│   │   ├── process_commands.py
+│   │   └── util_commands.py
+│   ├── core/               # Shell core
+│   │   ├── context.py
+│   │   ├── session.py
+│   │   └── shell.py
+│   ├── ui/                 # Shell UI components
+│   │   ├── banner.py
+│   │   ├── formatter.py
+│   │   ├── menu.py
+│   │   ├── prompt.py
+│   │   └── status_bar.py
+│   └── utils/              # Shell utilities
+│       ├── help_system.py
+│       └── log_viewer.py
+│
+├── deps/                   # ☕ Java JAR Dependencies
+│   └── *.jar               # lib-transactional-engine JARs
+│
 ├── callbacks/              # ⚠️ DEPRECATED (use integration/)
 │   └── __init__.py         # Backwards compatibility wrapper
 │
 ├── internal/               # 🔒 Internal Implementation Details
-│   └── engine/             # Internal engine implementations
+│   └── engine/             # Re-exports engines for public API
 │       └── __init__.py
 │
 └── cli.py                  # 🖥️ CLI Entrypoint
@@ -202,26 +239,26 @@ fireflytx/
 
 ## Module Responsibilities
 
-### 1. API Layer (`api/`)
+### 1. Engine Layer (`engine/`)
 
-**Purpose:** High-level, user-friendly API facade
+**Purpose:** Main engine wrappers for SAGA and TCC execution
 
 **Key Components:**
-- `SagaExecutionEngine` - Main entry point for SAGA execution
-- `create_saga_engine()` - Factory function for engine creation
-- `execute_saga_once()` - One-shot SAGA execution
+- `SagaEngine` - Main SAGA engine wrapper
+- `TccEngine` - Main TCC engine wrapper
 
 **When to use:**
 - ✅ Building applications (most common use case)
-- ✅ Need simple, async-first API
-- ❌ Need low-level control (use `engine/` instead)
+- ✅ Need async-first API with full control
+- ✅ Production deployments
 
 **Example:**
 ```python
-from fireflytx import create_saga_engine
+from fireflytx import SagaEngine
 
-engine = create_saga_engine()
-result = await engine.execute_saga_class(MySaga, data)
+engine = SagaEngine()
+await engine.initialize()
+result = await engine.execute(MySaga, data)
 ```
 
 ---
@@ -307,7 +344,7 @@ class OrderSaga:
 |------------------|----------------|---------------|
 | Define a SAGA transaction | `decorators/` | `saga.py` |
 | Define a TCC transaction | `decorators/` | `tcc.py` |
-| Execute a transaction | `api/` | `saga_executor.py` |
+| Execute a transaction | `engine/` | `saga_engine.py`, `tcc_engine.py` |
 | Configure the engine | `config/` | `engine_config.py` |
 | Publish events | `events/` | `event_publisher.py` |
 | Persist state | `persistence/` | `saga_persistence.py` |
@@ -323,7 +360,7 @@ class OrderSaga:
 **Start here:**
 1. `examples/` - See working examples
 2. `decorators/saga.py` - Learn decorators
-3. `api/saga_executor.py` - Use high-level API
+3. `engine/saga_engine.py` - Use SagaEngine
 4. `docs/saga-pattern.md` - Read pattern guide
 
 **Typical imports:**
@@ -558,7 +595,7 @@ Grouping them in `integration/` makes the architecture clearer and easier to und
 
 ```
 Are you building an application?
-├─ Yes → Use api/ (create_saga_engine, execute_saga_class)
+├─ Yes → Use SagaEngine/TccEngine (from fireflytx import SagaEngine)
 └─ No
    │
    Are you extending the framework?
@@ -603,10 +640,9 @@ This Java code is compiled into a shaded JAR that runs as a subprocess, bridging
 
 | **Module** | **Purpose** | **When to Use** |
 |------------|-------------|-----------------|
-| `api/` | High-level API | Building applications |
+| `engine/` | SAGA/TCC engines | Building applications |
 | `decorators/` | Define transactions | All use cases |
 | `core/` | Core types | All use cases |
-| `engine/` | Engine wrappers | Advanced control |
 | `integration/` | Java bridge | Extending framework |
 | `config/` | Configuration | Production deployments |
 | `events/` | Event publishing | Observability |
@@ -639,7 +675,7 @@ from fireflytx.config import EngineConfig
 config = EngineConfig(max_concurrent_executions=100)
 engine = SagaEngine(config=config)
 await engine.initialize()
-result = await engine.execute_saga_class(MySaga, data)
+result = await engine.execute(MySaga, data)
 ```
 
 ---

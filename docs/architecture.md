@@ -351,7 +351,7 @@ engine = SagaEngine()
 await engine.initialize()
 
 # Execute SAGA by class
-result = await engine.execute_by_class(
+result = await engine.execute(
     PaymentSaga,
     {"amount": 100.0}
 )
@@ -499,7 +499,7 @@ async def confirm_order(self, order_data):
 ```python
 from fireflytx import SagaResult
 
-result = await engine.execute_saga_class(MySaga, input_data)
+result = await engine.execute(MySaga, input_data)
 
 # Check success
 if result.is_success:
@@ -646,7 +646,7 @@ Errors are propagated transparently:
 
 ```python
 try:
-    result = await engine.execute_saga_class(MySaga, data)
+    result = await engine.execute(MySaga, data)
 except JavaExecutionError as e:
     print(f"Java error: {e.java_exception}")
     print(f"Stack trace: {e.java_stack_trace}")
@@ -902,7 +902,7 @@ engine = create_saga_engine(persistence_provider=provider)
 
 ```python
 # Transaction crashes mid-execution
-result = await engine.execute_saga_class(MySaga, data)
+result = await engine.execute(MySaga, data)
 # Process crashes here...
 
 # After restart, transaction can be recovered
@@ -1470,8 +1470,9 @@ class PaymentSaga:
 
 ```python
 # You call this
-engine = create_saga_engine()
-result = await engine.execute_saga_class(PaymentSaga, {"amount": 100})
+engine = SagaEngine()
+await engine.initialize()
+result = await engine.execute(PaymentSaga, {"amount": 100})
 ```
 
 **What happens internally:**
@@ -1532,7 +1533,7 @@ result = await engine.execute_saga_class(PaymentSaga, {"amount": 100})
 
 ```python
 # Execution request sent to Java
-result = await engine.execute_saga_class(PaymentSaga, {"amount": 100})
+result = await engine.execute(PaymentSaga, {"amount": 100})
 ```
 
 **Detailed execution flow:**
@@ -1541,6 +1542,7 @@ result = await engine.execute_saga_class(PaymentSaga, {"amount": 100})
 
 ```
 1. Python → Java: "Execute saga 'payment-processing' with data {...}"
+   (via engine.execute(PaymentSaga, {"amount": 100}))
 
 2. Java Engine: Analyzes dependency graph
    - validate (no dependencies) → can run immediately
@@ -2035,7 +2037,7 @@ jmap -heap <java_pid>
 3. **Shutdown engine when done:**
    ```python
    try:
-       result = await engine.execute_saga_class(MySaga, data)
+       result = await engine.execute(MySaga, data)
    finally:
        await engine.shutdown()  # Clean up resources
    ```

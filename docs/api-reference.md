@@ -20,11 +20,10 @@ class SagaEngine:
         persistence_provider: Optional[Any] = None,
     ) -> None
     async def initialize(self) -> None
-    async def execute(self, saga_name: str, input_data: Dict[str, Any]) -> SagaResult
-    async def execute_by_class(
+    async def execute(
         self,
         saga_class: type,
-        step_inputs: Union[Dict[str, Any], StepInputs],
+        step_inputs: Union[Dict[str, Any], StepInputs] = None,
         context: Optional[SagaContext] = None,
     ) -> SagaResult
     async def register_saga(self, saga_class: type, saga_name: Optional[str] = None) -> None
@@ -72,32 +71,18 @@ engine = SagaEngine()
 await engine.initialize()
 ```
 
-#### `execute(saga_name, input_data)`
-Execute a SAGA transaction by name (compatibility method for tests).
-
-**Parameters:**
-- `saga_name` (str): Name of the SAGA to execute
-- `input_data` (Dict[str, Any]): Input data for SAGA steps
-
-**Returns:** `SagaResult` - Execution result
-
-**Raises:**
-- `RuntimeError`: If engine not initialized
-
-**Example:**
-```python
-result = await engine.execute("payment-saga", {"amount": 100.0})
-```
-
-#### `execute_by_class(saga_class, step_inputs, context=None)`
+#### `execute(saga_class, step_inputs=None, context=None)`
 Execute a SAGA by Python class with pure Java orchestration.
 
 **Parameters:**
 - `saga_class` (type): Python class decorated with `@saga`
-- `step_inputs` (Union[Dict[str, Any], StepInputs]): Inputs for saga steps
+- `step_inputs` (Union[Dict[str, Any], StepInputs], optional): Inputs for saga steps (defaults to empty dict)
 - `context` (Optional[SagaContext]): Optional saga context
 
 **Returns:** `SagaResult` - Execution result containing results from Java engine
+
+**Raises:**
+- `RuntimeError`: If engine not initialized
 
 **Example:**
 ```python
@@ -107,7 +92,7 @@ class PaymentSaga:
     async def validate_payment(self, amount: float):
         return {"validated": True}
 
-result = await engine.execute_by_class(PaymentSaga, {"amount": 100.0})
+result = await engine.execute(PaymentSaga, {"amount": 100.0})
 ```
 
 #### `register_saga(saga_class, saga_name=None)`
@@ -140,9 +125,15 @@ The main engine for executing TCC transactions.
 
 ```python
 class TccEngine:
-    def __init__(self, java_bridge: Optional[JavaSubprocessBridge] = None) -> None
+    def __init__(
+        self,
+        config: Optional[Any] = None,
+        java_bridge: Optional[JavaSubprocessBridge] = None,
+        timeout_ms: int = 30000,
+        enable_monitoring: bool = True,
+    ) -> None
     def start(self) -> None
-    def execute(
+    async def execute(
         self,
         tcc_class: Type,
         input_data: dict = None,
