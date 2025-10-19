@@ -1487,20 +1487,17 @@ public class JavaSubprocessBridge {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> participantTryResult = (Map<String, Object>) tryResults.get(participantId);
 
-                // Determine input data based on participant pattern:
-                // - Class-based pattern: CONFIRM/CANCEL receive TRY result
-                // - Method-based pattern: CONFIRM/CANCEL receive original input data
-                Object confirmInputData;
-                if (isClassBased != null && isClassBased) {
-                    // Class-based pattern - use TRY result
-                    confirmInputData = participantTryResult;
-                } else {
-                    // Method-based pattern - use original input data
-                    confirmInputData = context.getParticipantInputs().get(participantId);
-                    if (confirmInputData == null) {
-                        confirmInputData = context.getParticipantInputs();
-                    }
+                // Get original input data
+                Object originalInputData = context.getParticipantInputs().get(participantId);
+                if (originalInputData == null) {
+                    originalInputData = context.getParticipantInputs();
                 }
+
+                // For CONFIRM/CANCEL methods, Python expects both original data and try_result
+                // Create a combined input structure
+                Map<String, Object> confirmInputData = new HashMap<>();
+                confirmInputData.put("data", originalInputData);
+                confirmInputData.put("try_result", participantTryResult);
 
                 if (callbackHandler != null && confirmMethod != null) {
                     Map<String, Object> confirmResult = callbackHandler.executeTccMethod("CONFIRM", participantId, confirmMethod, confirmInputData, contextData);
@@ -1552,20 +1549,17 @@ public class JavaSubprocessBridge {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> participantTryResult = (Map<String, Object>) tryResults.get(participantId);
 
-                // Determine input data based on participant pattern:
-                // - Class-based pattern: CONFIRM/CANCEL receive TRY result
-                // - Method-based pattern: CONFIRM/CANCEL receive original input data
-                Object cancelInputData;
-                if (isClassBased != null && isClassBased) {
-                    // Class-based pattern - use TRY result
-                    cancelInputData = participantTryResult;
-                } else {
-                    // Method-based pattern - use original input data
-                    cancelInputData = context.getParticipantInputs().get(participantId);
-                    if (cancelInputData == null) {
-                        cancelInputData = context.getParticipantInputs();
-                    }
+                // Get original input data
+                Object originalInputData = context.getParticipantInputs().get(participantId);
+                if (originalInputData == null) {
+                    originalInputData = context.getParticipantInputs();
                 }
+
+                // For CONFIRM/CANCEL methods, Python expects both original data and try_result
+                // Create a combined input structure
+                Map<String, Object> cancelInputData = new HashMap<>();
+                cancelInputData.put("data", originalInputData);
+                cancelInputData.put("try_result", participantTryResult);
 
                 if (callbackHandler != null && cancelMethod != null) {
                     Map<String, Object> cancelResult = callbackHandler.executeTccMethod("CANCEL", participantId, cancelMethod, cancelInputData, contextData);
@@ -1620,6 +1614,17 @@ public class JavaSubprocessBridge {
                     if (result != null && Boolean.TRUE.equals(result.get("success"))) {
                         System.out.println("HTTP callback completed successfully: " + pythonMethod);
 
+                        // Get the step result
+                        Object stepResult = result.get("result");
+
+                        // Store step result in context for compensation to access
+                        // This ensures compensation methods can access the result from the original step
+                        if (stepResult != null) {
+                            String stepResultKey = "__step_result_" + stepId;
+                            ctx.variables().put(stepResultKey, stepResult);
+                            System.out.println("[lib-transactional-engine] 💾 Stored step result for compensation: " + stepResultKey);
+                        }
+
                         // Update context variables with any changes from Python
                         @SuppressWarnings("unchecked")
                         Map<String, Object> contextUpdates = (Map<String, Object>) result.get("context_updates");
@@ -1643,7 +1648,7 @@ public class JavaSubprocessBridge {
                             System.out.println("[lib-transactional-engine] ⚠️  No context_updates in callback response");
                         }
 
-                        return result.get("result");
+                        return stepResult;
                     } else {
                         String error = result != null ? (String) result.get("error") : "Step execution failed";
                         System.err.println("HTTP callback failed: " + pythonMethod + " - " + error);
@@ -1660,12 +1665,37 @@ public class JavaSubprocessBridge {
 
             System.out.println("[lib-transactional-engine] Compensating step: " + stepId + " via Python callback: " + compensationMethod);
 
-            // Prepare compensation input
+            // Prepare compensation input - this should be the step result
+            // NOTE: The 'arg' parameter from lib-transactional-engine may contain the SAGA input data,
+            // not the step result. We need to retrieve the actual step result from context.
             Map<String, Object> compensationInput = new HashMap<>();
-            if (arg instanceof Map) {
+
+            // Try to retrieve step result from context first (most reliable)
+            String stepResultKey = "__step_result_" + stepId;
+            Object storedResult = ctx.variables().get(stepResultKey);
+
+            if (storedResult instanceof Map) {
                 @SuppressWarnings("unchecked")
-                Map<String, Object> argMap = (Map<String, Object>) arg;
-                compensationInput.putAll(argMap);
+                Map<String, Object> resultMap = (Map<String, Object>) storedResult;
+                compensationInput.putAll(resultMap);
+                System.out.println("[lib-transactional-engine] ✅ Compensation input from context (step result): " + resultMap.keySet());
+            } else if (storedResult != null) {
+                compensationInput.put("result", storedResult);
+                System.out.println("[lib-transactional-engine] ✅ Compensation input from context (wrapped): " + storedResult.getClass().getSimpleName());
+            } else {
+                // Fallback to arg if step result not found in context
+                System.out.println("[lib-transactional-engine] ⚠️  WARNING: Step result not found in context, falling back to arg parameter");
+                if (arg instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> argMap = (Map<String, Object>) arg;
+                    compensationInput.putAll(argMap);
+                    System.out.println("[lib-transactional-engine] Compensation input from arg: " + argMap.keySet());
+                } else if (arg != null) {
+                    compensationInput.put("result", arg);
+                    System.out.println("[lib-transactional-engine] Compensation input from arg (wrapped): " + arg.getClass().getSimpleName());
+                } else {
+                    System.out.println("[lib-transactional-engine] ⚠️  ERROR: No compensation input available!");
+                }
             }
 
             // Add context data including variables
