@@ -1623,16 +1623,24 @@ public class JavaSubprocessBridge {
                         // Update context variables with any changes from Python
                         @SuppressWarnings("unchecked")
                         Map<String, Object> contextUpdates = (Map<String, Object>) result.get("context_updates");
-                        if (contextUpdates != null && contextUpdates.containsKey("variables")) {
-                            @SuppressWarnings("unchecked")
-                            Map<String, Object> updatedVariables = (Map<String, Object>) contextUpdates.get("variables");
-                            if (updatedVariables != null) {
-                                // Update the SagaContext with new variables from Python
-                                for (Map.Entry<String, Object> entry : updatedVariables.entrySet()) {
-                                    ctx.variables().put(entry.getKey(), entry.getValue());
+                        if (contextUpdates != null) {
+                            if (contextUpdates.containsKey("variables")) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> updatedVariables = (Map<String, Object>) contextUpdates.get("variables");
+                                if (updatedVariables != null && !updatedVariables.isEmpty()) {
+                                    // Update the SagaContext with new variables from Python
+                                    for (Map.Entry<String, Object> entry : updatedVariables.entrySet()) {
+                                        ctx.variables().put(entry.getKey(), entry.getValue());
+                                    }
+                                    System.out.println("[lib-transactional-engine] ✅ Updated context variables: " + updatedVariables.keySet());
+                                } else {
+                                    System.out.println("[lib-transactional-engine] ℹ️  No context variables to update (variables map is empty)");
                                 }
-                                System.out.println("[lib-transactional-engine] Updated context variables: " + updatedVariables.keySet());
+                            } else {
+                                System.out.println("[lib-transactional-engine] ⚠️  context_updates missing 'variables' key");
                             }
+                        } else {
+                            System.out.println("[lib-transactional-engine] ⚠️  No context_updates in callback response");
                         }
 
                         return result.get("result");

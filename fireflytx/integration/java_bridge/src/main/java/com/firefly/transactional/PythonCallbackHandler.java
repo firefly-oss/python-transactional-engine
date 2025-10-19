@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import reactor.core.publisher.Mono;
 
 /**
  * Handles callbacks from Java to Python for SAGA step and compensation execution using HTTP.
@@ -72,6 +73,50 @@ public class PythonCallbackHandler {
             error.put("error", e.getMessage());
             return error;
         }
+    }
+
+    /**
+     * Execute a callback to Python for a specific method (reactive version).
+     * Used by lib-transactional-engine integration with reactive SAGA engine.
+     *
+     * @param methodName The Python method name to execute
+     * @param inputData Input data for the method
+     * @param contextData Context data including variables and correlation ID
+     * @return Mono of response from Python method
+     */
+    public Mono<Map<String, Object>> executeCallbackReactive(String methodName, Map<String, Object> inputData, Map<String, Object> contextData) {
+        return Mono.fromCallable(() -> {
+            try {
+                return postJson("STEP", methodName, (String) contextData.get("step_id"), inputData, contextData);
+            } catch (Exception e) {
+                Map<String, Object> error = new HashMap<>();
+                error.put("success", false);
+                error.put("error", e.getMessage());
+                return error;
+            }
+        });
+    }
+
+    /**
+     * Execute a compensation callback to Python (reactive version).
+     * Used by lib-transactional-engine integration with reactive SAGA engine.
+     *
+     * @param methodName The Python compensation method name to execute
+     * @param inputData Input data for the compensation method
+     * @param contextData Context data including variables and correlation ID
+     * @return Mono of response from Python method
+     */
+    public Mono<Map<String, Object>> executeCompensationCallbackReactive(String methodName, Map<String, Object> inputData, Map<String, Object> contextData) {
+        return Mono.fromCallable(() -> {
+            try {
+                return postJson("COMPENSATION", methodName, (String) contextData.get("step_id"), inputData, contextData);
+            } catch (Exception e) {
+                Map<String, Object> error = new HashMap<>();
+                error.put("success", false);
+                error.put("error", e.getMessage());
+                return error;
+            }
+        });
     }
 
     // Optional helper if needed in the future
