@@ -331,13 +331,14 @@ class PythonCallbackHandler:
             params = list(sig.parameters.values())
 
             # Determine which parameter is input_data
+            # New signature: method(self, data, context) - data is always at index 1
             if expects_context:
-                # Advanced API: method(self, context, input_data) - param index 2
+                # Advanced API: method(self, data, context) - data at param index 1
                 if len(params) < 3:
                     return input_data
-                param_index = 2
+                param_index = 1
             else:
-                # Simple API: method(self, input_data) - param index 1
+                # Simple API: method(self, data) - data at param index 1
                 if len(params) < 2:
                     return input_data
                 param_index = 1
