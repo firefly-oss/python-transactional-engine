@@ -156,21 +156,27 @@ class PythonCallbackHandler:
             # Create context from context data
             from ..core.saga_context import SagaContext
 
+            # Log what we received from Java
+            incoming_variables = context_data.get("variables", {})
+            if incoming_variables:
+                logger.debug(f"📥 [IPC] Received {len(incoming_variables)} context variables from Java: {list(incoming_variables.keys())}")
+
             context = SagaContext(
                 correlation_id=context_data.get("correlation_id", "unknown"),
                 saga_name=context_data.get("saga_name"),
-                variables=context_data.get("variables", {}),
+                variables=incoming_variables,
             )
 
             # Add step results from context data to make them available to current step
             step_results = context_data.get("step_results", {})
-            for step_id, step_result in step_results.items():
+            for step_id_key, step_result in step_results.items():
+                # Store step-specific result
+                context.set_step_result(step_id_key, step_result)
+
+                # Also extract specific data from step results and add to variables
                 if isinstance(step_result, dict):
-                    # Extract specific data from step results
                     for key, value in step_result.items():
                         context.set_data(key, value)
-                        # Also set step-specific result
-                        context.set_step_result(step_id, step_result)
 
             # Get the method to execute
             if not hasattr(self.saga_instance, method_name):
@@ -191,13 +197,37 @@ class PythonCallbackHandler:
             # Convert result to dict if it's a Pydantic model or dataclass
             serialized_result = self._serialize_result(result)
 
+            # Automatically store the step result in context for downstream steps
+            # This ensures that even if the step doesn't explicitly call context.set_variable(),
+            # the result is still available to dependent steps
+            if serialized_result is not None:
+                context.set_step_result(step_id, serialized_result)
+
+                # Also add result fields to variables if result is a dict
+                if isinstance(serialized_result, dict):
+                    for key, value in serialized_result.items():
+                        # Only add if not already set by the step method
+                        if key not in context.variables:
+                            context.set_variable(f"{step_id}_{key}", value)
+
+            # Get context dict with all variables
+            context_dict = context.to_dict()
+
+            # Log context variables being sent back to Java
+            variables = context_dict.get("variables", {})
+            if variables:
+                logger.info(f"📤 [IPC] Sending {len(variables)} context variables to Java: {list(variables.keys())}")
+                logger.debug(f"📤 [IPC] Context variable values: {variables}")
+            else:
+                logger.info(f"📤 [IPC] No context variables to send to Java (step may not have set any)")
+
             # Include context updates so Java can persist context variables between steps
             return {
                 "success": True,
                 "result": serialized_result,
                 "step_id": step_id,
                 "method_name": method_name,
-                "context_updates": context.to_dict(),  # Include full context with variables
+                "context_updates": context_dict,  # Include full context with variables
             }
 
         except Exception as e:
@@ -214,9 +244,9 @@ class PythonCallbackHandler:
 
         Supports two API styles:
         1. Simple: method(self, input_data: TypedModel) - for independent steps
-        2. Advanced: method(self, context: SagaContext, input_data: TypedModel) - for sharing data between steps
+        2. With context: method(self, input_data: TypedModel, context: SagaContext) - for sharing data between steps
 
-        The framework auto-detects which signature to use based on the method's parameters.
+        The framework auto-detects which signature to use based on the method's parameter count.
         """
         try:
             # Get the original unwrapped function to check signature
@@ -228,7 +258,7 @@ class PythonCallbackHandler:
             sig = inspect.signature(original_func)
             params = list(sig.parameters.values())
 
-            # 1 param = (self) - no input, 2 params = (self, input_data), 3+ params = (self, context, input_data)
+            # 1 param = (self) - no input, 2 params = (self, input_data), 3+ params = (self, input_data, context)
             expects_context = len(params) >= 3
             expects_input = len(params) >= 2
 
@@ -246,7 +276,8 @@ class PythonCallbackHandler:
                 asyncio.set_event_loop(loop)
                 try:
                     if expects_context:
-                        result = loop.run_until_complete(method(context, converted_input))
+                        # Signature: method(self, data, context)
+                        result = loop.run_until_complete(method(converted_input, context))
                     elif expects_input:
                         result = loop.run_until_complete(method(converted_input))
                     else:
@@ -256,7 +287,8 @@ class PythonCallbackHandler:
             else:
                 # Execute sync method directly
                 if expects_context:
-                    result = method(context, converted_input)
+                    # Signature: method(self, data, context)
+                    result = method(converted_input, context)
                 elif expects_input:
                     result = method(converted_input)
                 else:
