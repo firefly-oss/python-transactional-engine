@@ -27,7 +27,7 @@ class PaymentSaga:
 # Execute with enterprise reliability
 engine = SagaEngine()
 await engine.initialize()
-result = await engine.execute_by_class(PaymentSaga, {"amount": 100.0})
+result = await engine.execute(PaymentSaga, {"amount": 100.0})
 print(f"✅ Payment completed: {result.is_success}")
 await engine.shutdown()
 ```
@@ -131,7 +131,7 @@ async def main():
     await engine.initialize()
 
     # Execute the SAGA
-    result = await engine.execute_by_class(
+    result = await engine.execute(
         HelloWorldSaga,
         {"name": "World"}
     )
@@ -763,7 +763,7 @@ fireflytx>>> @saga("payment-processing")
 #### **5. Execute the SAGA**
 
 ```python
-fireflytx>>> result = await saga_engine.execute_by_class(
+fireflytx>>> result = await saga_engine.execute(
 ...      ...     PaymentSaga,
 ...      ...     {"amount": 100.0}
 ...      ... )
@@ -969,7 +969,7 @@ fireflytx>>> @saga("test")
 ...      ...         return {"result": "ok"}
 
 # Execute
-fireflytx>>> result = await saga_engine.execute_by_class(TestSaga, {})
+fireflytx>>> result = await saga_engine.execute(TestSaga, {})
 fireflytx>>> print(result.is_success)
 True
 
@@ -991,7 +991,7 @@ fireflytx>>> java_info()
 fireflytx>>> inspect(MySaga)
 
 # Run with debugging
-fireflytx>>> result = await saga_engine.execute_by_class(MySaga, {"debug": True})
+fireflytx>>> result = await saga_engine.execute(MySaga, {"debug": True})
 
 # Check logs
 fireflytx>>> logs(100)

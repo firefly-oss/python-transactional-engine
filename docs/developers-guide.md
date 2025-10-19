@@ -1,155 +1,525 @@
 # FireflyTX Developers Guide
 
-Purpose: This guide explains how the Python wrapper is designed over the real Java lib-transactional-engine. It covers architecture, data flow, key components, coding conventions, and how to extend and debug the system.
+> **🎯 Complete technical reference for FireflyTX contributors and advanced users**
 
-Date: 2025-10-19
+**Last Updated:** 2025-10-19
 
-## 1. Design Principles
+---
 
-- Python defines, Java executes: All business logic and configuration live in Python; orchestration and execution reliability runs in Java.
-- No mocks or simulations: The runtime path integrates with the real lib-transactional-engine JAR. Examples may demonstrate business logic, but the engine path is real.
-- Async-first in Python: SAGA steps are designed to support asyncio, with automatic handling from the callback server.
-- Subprocess isolation: We avoid in-process embedding (e.g., JPype) and run Java as a managed subprocess for maximal compatibility and stability.
-- Observability: Java logs are streamed into Python logging. Results are mapped into Pythonic objects.
+## Table of Contents
 
-## 2. High-Level Architecture
+1. [Introduction](#introduction)
+2. [Architecture Overview](#architecture-overview)
+3. [Core Components](#core-components)
+4. [Development Setup](#development-setup)
+5. [Python-Java Integration](#python-java-integration)
+6. [Engine Internals](#engine-internals)
+7. [Decorator System](#decorator-system)
+8. [Testing & Debugging](#testing--debugging)
+9. [Contributing Guidelines](#contributing-guidelines)
+10. [Troubleshooting](#troubleshooting)
+
+---
+
+## Introduction
+
+### What is FireflyTX?
+
+FireflyTX is a **Python wrapper** for the enterprise-grade Java library `lib-transactional-engine`, enabling distributed transaction patterns (SAGA and TCC) in Python applications with genuine Java execution.
+
+### Core Architectural Principle
+
+**"Python defines, Java executes"**
+
+- **Python**: Provides decorators, API, business logic, and developer experience
+- **Java**: Handles orchestration, retry, compensation, persistence, and transaction management
+- **Communication**: Subprocess IPC via JSON files + HTTP callbacks
+
+### Key Design Goals
+
+1. **Zero Mocks**: Real `lib-transactional-engine` integration, not simulations
+2. **Type Safety**: Comprehensive Pydantic models and type hints
+3. **Developer Experience**: Pythonic API with async/await support
+4. **Production Ready**: Battle-tested Java engine with enterprise features
+5. **Extensibility**: Pluggable events, persistence, and configuration
+
+---
+
+## Architecture Overview
+
+### High-Level Architecture
 
 ```
-Python App                Python Wrapper                        Java Side
------------              -------------------            ------------------------------
-@saga / @tcc  --->  Config Generator (JSON)  --->  SagaEngine / TccEngine (JAR)
-step methods     <--- HTTP Callback Server   <---  JavaSubprocessBridge (bridge JAR)
-
-                                 ^
-                                 | JSON over files (requests/responses) + HTTP callbacks
-                                 v
-                           JavaSubprocessBridge (Python)
+┌─────────────────────────────────────────────────────────────┐
+│                  Python Application Layer                   │
+│  • Business Logic (async/await)                             │
+│  • @saga, @saga_step, @tcc, @tcc_participant decorators     │
+│  • SagaEngine.execute() / TccEngine.execute()               │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  FireflyTX Python Package                   │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │   Engines    │  │  Decorators  │  │     Core     │      │
+│  │ SagaEngine   │  │    @saga     │  │   Types &    │      │
+│  │  TccEngine   │  │  @saga_step  │  │   Context    │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ Integration  │  │    Config    │  │    Events    │      │
+│  │    Bridge    │  │  Management  │  │ Persistence  │      │
+│  │  Callbacks   │  │              │  │   Logging    │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼ IPC (JSON files + HTTP)
+┌─────────────────────────────────────────────────────────────┐
+│              Java Subprocess (Separate JVM)                 │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │         lib-transactional-engine (Spring Boot)       │   │
+│  │  • SagaEngine (orchestration, retry, compensation)   │   │
+│  │  • TccEngine (Try-Confirm-Cancel coordination)       │   │
+│  │  • Reactive execution (Project Reactor)              │   │
+│  │  • Persistence & recovery                            │   │
+│  └──────────────────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │         JavaSubprocessBridge (IPC Handler)           │   │
+│  │  • Polls request directory for JSON files            │   │
+│  │  • Executes Java methods via reflection              │   │
+│  │  • Writes responses to response directory            │   │
+│  │  • Makes HTTP callbacks to Python for business logic │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-Core components:
-- fireflytx.decorators: Python decorators for SAGA/TCC definitions.
-- fireflytx.config.java_config_generator: Converts Python definitions to Java-readable configuration.
-- fireflytx.utils.java_subprocess_bridge: Starts the JVM as a subprocess, implements JSON file IPC to call Java classes/methods, and streams Java logs back to Python.
-- fireflytx.callbacks: Lightweight HTTP server and registry that Java calls to execute Python methods for steps/compensations.
-- fireflytx.api.saga_executor.SagaExecutionEngine: High-level API that brings it all together for SAGA. A similar path exists for TCC.
+### Communication Flow
 
-## 3. Process Lifecycle
+**1. Python → Java (Method Calls)**
+```
+Python                          Java
+  │                              │
+  ├─ Write request.json ────────>│
+  │  {requestId, className,      │
+  │   methodName, args}          │
+  │                              ├─ Poll requests/
+  │                              ├─ Read request.json
+  │                              ├─ Execute method
+  │                              ├─ Write response.json
+  │<──── Read response.json ─────┤
+  │  {success, result}           │
+```
 
-1. Engine initialization
-   - SagaExecutionEngine.initialize() -> JavaSubprocessBridge.start_jvm() builds/loads the lib-transactional-engine JAR if needed and starts the Java bridge main class.
-   - The bridge prepares temp directories for request/response JSON files and starts log readers for stdout/stderr.
-2. Saga/TCC registration
-   - Python classes decorated with @saga or @tcc are registered. We build a complete definition (steps, compensations, dependencies, timings) and send it to Java via call_java_method().
-3. Execution
-   - For SAGA: execute_saga() creates a request which Java executes. When Java needs to run a Python step, it POSTs to the callback HTTP endpoint with method metadata.
-   - For TCC: Java orchestrates TRY/CONFIRM/CANCEL phases and calls back to Python participant methods in order.
-4. Results
-   - Java returns a structured map of the execution outcome. Python maps it to SagaResult/TccResult with duration, failed/compensated steps, etc.
-5. Shutdown
-   - The bridge terminates the Java subprocess, joins reader threads, and cleans resources.
+**2. Java → Python (Callbacks)**
+```
+Java                            Python
+  │                              │
+  ├─ HTTP POST /callback ───────>│
+  │  {method_name, step_id,      │
+  │   input_data, context_data}  │
+  │                              ├─ Execute Python method
+  │                              ├─ Return result
+  │<──── HTTP 200 OK ────────────┤
+  │  {success, result,           │
+  │   context_updates}           │
+```
 
-## 4. Subprocess Bridge (Python)
+---
 
-Module: fireflytx/utils/java_subprocess_bridge.py
+## Core Components
 
-Responsibilities:
-- Build or locate the lib-transactional-engine JAR from GitHub using JarBuilder when needed.
-- Start the Java bridge JAR (java_bridge/java-subprocess-bridge.jar) with a classpath including the real engine.
-- Create a temp directory with requests/ and responses/ folders for IPC.
-- Expose call_java_method() to send method invocation requests and wait for responses with timeouts.
-- Stream Java stdout/stderr into a dedicated logger fireflytx.java and provide helper APIs: set_java_log_level, get_java_logs, follow_java_logs, enable_java_log_file.
+### 1. Engine Layer (`fireflytx/engine/`)
 
-Key data structures:
-- JavaClassCallRequest/Response: simple dataclasses that carry the call metadata and results.
+#### SagaEngine
 
-## 5. Java Bridge (JAR)
+**Purpose**: Python wrapper for `lib-transactional-engine` SagaEngine
 
-Location: fireflytx/java_bridge/src/main/java/com/firefly/transactional/
+**Lifecycle**:
+```python
+from fireflytx import SagaEngine
 
-Responsibilities:
-- Main entry point JavaSubprocessBridge: reads JSON requests from the temp folder, performs reflection-based calls, manages Java instances, and writes JSON responses.
-- Integrates with SagaEngine/TccEngine of the real lib-transactional-engine.
-- Performs HTTP callbacks back to Python for method executions during orchestration.
-- Performs topological ordering (SAGA) and proper two-phase flow (TCC) based on definitions received from Python.
+# 1. Create engine
+engine = SagaEngine(
+    compensation_policy="STRICT_SEQUENTIAL",
+    auto_optimization_enabled=True,
+    java_bridge=None  # Creates new bridge if not provided
+)
 
-Logging:
-- Prints informative lines to stdout/stderr which are captured by the Python side and re-emitted into Python logging.
+# 2. Initialize (starts Java subprocess)
+await engine.initialize()
 
-## 6. Python Callback Server
+# 3. Execute SAGAs
+result = await engine.execute(MySaga, input_data, context)
 
-Module: fireflytx/utils/python_callback_handler.py
+# 4. Shutdown
+await engine.shutdown()
+```
 
-- A small HTTP server per registered class exposes /callback.
-- Receives POST payloads of the form: method_type, method_name, step_id, input_data, context_data.
-- Executes the requested Python method (async or sync supported).
-- Returns { success, result, step_id, method_name } or an error payload.
+**Key Methods**:
+- `__init__()`: Configure engine (compensation policy, persistence, events)
+- `initialize()`: Start Java subprocess bridge, create Java SagaEngine instance
+- `execute(saga_class, step_inputs, context)`: Execute SAGA with Java orchestration
+- `register_saga(saga_class)`: Register SAGA definition with Java engine
+- `shutdown()`: Stop Java subprocess and cleanup resources
 
-Threading/async notes:
-- Async methods run in a dedicated event loop within a thread pool so we can safely call into coroutine functions from the HTTP handler thread.
+**Internal Flow**:
+1. `execute()` calls `register_saga()` to send SAGA definition to Java
+2. Java engine validates and stores SAGA structure
+3. `execute()` calls Java `SagaEngine.execute()` via IPC
+4. Java orchestrates execution, making HTTP callbacks to Python for each step
+5. Python executes business logic and returns results
+6. Java handles retry, compensation, and persistence
+7. Final `SagaResult` returned to Python
 
-## 7. Configuration Generator
+#### TccEngine
 
-Module: fireflytx/config/java_config_generator.py
+**Purpose**: Python wrapper for TCC pattern execution
 
-- Extracts decorator metadata and produces a comprehensive structure usable by the Java engine.
-- Maps step IDs to Python method names, includes timing/retry settings, events, and compensation method mappings.
-- Produces engine-level config (event publishers, persistence providers) and per-saga details.
+**Lifecycle**:
+```python
+from fireflytx import TccEngine
 
-## 8. Observability and Logs
+# 1. Create engine
+engine = TccEngine(
+    timeout_ms=30000,
+    enable_monitoring=True,
+    java_bridge=None
+)
 
-- All Java engine logs are streamed to logger name fireflytx.java.
-- Use environment variable FIREFLYTX_JAVA_LOG_LEVEL to set initial verbosity.
-- Programmatic APIs allow tailing or teeing logs to a file for operations.
+# 2. Start (initializes Java subprocess)
+engine.start()
 
-## 9. Testing Strategy
+# 3. Execute TCC transactions
+result = await engine.execute(MyTcc, input_data, correlation_id)
 
-- Unit tests focus on Python decorator behavior, configuration generation, and utility functions.
-- Integration tests run against the real lib-transactional-engine via the subprocess bridge. No mock engine is used in integration tests.
-- Examples demonstrate business logic patterns in Python; they are not substitutes for engine execution.
+# 4. Stop
+engine.stop()
+```
 
-## 10. Extending the Wrapper
+**Key Differences from SagaEngine**:
+- Uses `start()` instead of `initialize()` (synchronous)
+- Uses `stop()` instead of `shutdown()`
+- TCC execution is synchronous (blocking)
+- Three-phase protocol: Try → Confirm/Cancel
 
-- Adding new engine capabilities: create Python-side configuration fields and map them into java_config_generator.py; extend Java bridge handlers as needed.
-- Adding new decorators: follow existing patterns in fireflytx.decorators; include metadata extraction and integration with the config generator.
-- CLI: fireflytx/cli.py offers administrative commands; keep them decoupled from runtime concerns.
+### 2. Integration Layer (`fireflytx/integration/`)
 
-## 11. Coding Conventions
+#### JavaSubprocessBridge (`bridge.py`)
 
-- Keep Java-facing payloads simple (dicts with primitive values) to minimize serialization risk.
-- Avoid tight coupling to Java types; perform mapping at the boundaries.
-- Maintain strict separation: Python business logic vs Java orchestration.
+**Purpose**: Manages Java subprocess and IPC communication
 
-## 12. Troubleshooting
+**Initialization**:
+```python
+from fireflytx.integration import JavaSubprocessBridge
 
-- If Java fails to start, confirm Java 11+ is installed and accessible in PATH.
-- Use get_java_logs() and follow_java_logs() to inspect Java engine output.
-- If callbacks fail, check that the PythonCallbackHandler is running and the endpoint URL matches.
+bridge = JavaSubprocessBridge()
+bridge.start_jvm(config=jvm_config)
+```
 
-## 13. Security Considerations
+**Key Responsibilities**:
+1. **JAR Management**: Locates `lib-transactional-engine` JARs in `fireflytx/deps/`
+2. **Process Management**: Starts Java subprocess with Spring Boot application
+3. **IPC Communication**: JSON file-based request/response
+4. **Callback Server**: Manages HTTP callback handlers for Java → Python calls
+5. **Lifecycle**: Handles startup, shutdown, and error recovery
 
-- The callback server binds to localhost by default; if exposing externally, ensure proper network controls.
-- Treat callback payloads as trusted within the application boundary; do not accept arbitrary external traffic.
+**IPC Mechanism**:
+- **Request Directory**: `{temp_dir}/requests/` - Python writes, Java reads
+- **Response Directory**: `{temp_dir}/responses/` - Java writes, Python reads
+- **Polling**: Java polls requests directory every 100ms
+- **Timeout**: Python waits up to 30 seconds for response
 
-## 14. Roadmap Notes
+**Java Process Startup**:
+```bash
+java -Xmx2g -Xms512m \
+  -Djava.awt.headless=true \
+  -cp "fireflytx/deps/*" \
+  com.firefly.transactional.BridgeApplication \
+  /tmp/fireflytx_bridge_XXXXX
+```
 
-- Additional CLI commands for direct log following may be added. The runtime path already supports real-time log streaming programmatically.
+#### PythonCallbackHandler (`callbacks.py`)
 
-This guide reflects the current, real integration design. For a big-picture overview, also read docs/architecture.md and the top-level README sections on Architecture and Java Logging Integration.
+**Purpose**: HTTP server for Java → Python callbacks (SAGA)
+
+**Implementation**:
+```python
+from fireflytx.integration.callbacks import PythonCallbackHandler
+
+handler = PythonCallbackHandler(
+    saga_instance=my_saga,
+    saga_config=saga_config,
+    port=8765
+)
+handler.start()  # Starts Flask server in background thread
+```
+
+**Callback Request Format**:
+```json
+{
+  "method_type": "STEP",
+  "method_name": "validate_payment",
+  "step_id": "validate",
+  "input_data": {"order_id": "123"},
+  "context_data": {
+    "correlation_id": "saga-uuid",
+    "step_id": "validate",
+    "variables": {"previous_step_result": "..."}
+  }
+}
+```
+
+**Callback Response Format**:
+```json
+{
+  "success": true,
+  "result": {"validated": true, "amount": 100.0},
+  "context_updates": {
+    "correlation_id": "saga-uuid",
+    "variables": {"validate_result": "..."}
+  }
+}
+```
+
+#### TccCallbackHandler (`tcc_callbacks.py`)
+
+**Purpose**: HTTP server for Java → Python callbacks (TCC)
+
+**TCC Callback Request Format**:
+```json
+{
+  "phase": "TRY",
+  "participant_id": "payment",
+  "method_name": "try_payment",
+  "input_data": {"amount": 100.0},
+  "context_data": {"correlation_id": "tcc-uuid"}
+}
+```
+
+### 3. Decorator System (`fireflytx/decorators/`)
+
+#### SAGA Decorators (`saga.py`)
+
+**@saga(name, layer_concurrency)**
+
+Marks a class as a SAGA transaction.
+
+**Metadata Attached**:
+```python
+cls._saga_name = "payment-processing"
+cls._saga_config = SagaConfig(
+    name="payment-processing",
+    layer_concurrency=5,
+    steps={},
+    compensation_methods={},
+    compensation_configs={}
+)
+```
+
+**@saga_step(step_id, depends_on, retry, timeout_ms, ...)**
+
+Marks a method as a SAGA step.
+
+**Metadata Attached**:
+```python
+func._saga_step_config = SagaStepConfig(
+    step_id="validate",
+    depends_on=["previous_step"],
+    retry=3,
+    backoff_ms=1000,
+    timeout_ms=30000,
+    jitter=True,
+    jitter_factor=0.3,
+    cpu_bound=False,
+    idempotency_key=None,
+    compensate="undo_validate",
+    compensation_retry=3,
+    compensation_timeout_ms=10000,
+    compensation_critical=False,
+    events=None
+)
+```
+
+**@compensation_step(for_step_id, retry, timeout_ms, critical)**
+
+Marks a method as a compensation step.
+
+**Metadata Attached**:
+```python
+func._compensation_for_step = "validate"
+func._compensation_config = CompensationStepConfig(
+    for_step_id="validate",
+    retry=3,
+    timeout_ms=10000,
+    critical=False,
+    backoff_ms=1000,
+    jitter=True,
+    jitter_factor=0.3
+)
+```
+
+#### TCC Decorators (`tcc.py`)
+
+**@tcc(name, timeout_ms)**
+
+Marks a class as a TCC transaction.
+
+**Metadata Attached**:
+```python
+cls._tcc_name = "payment-processing"
+cls._tcc_config = TccConfig(
+    name="payment-processing",
+    timeout_ms=30000,
+    participants={},
+    participant_classes={}
+)
+```
+
+**@tcc_participant(participant_id, order, timeout_ms)**
+
+Marks a nested class or method as a TCC participant.
+
+**Metadata Attached**:
+```python
+cls._tcc_participant_config = TccParticipantConfig(
+    participant_id="payment",
+    order=1,
+    timeout_ms=30000,
+    try_method=None,
+    confirm_method=None,
+    cancel_method=None
+)
+```
+
+**@try_method, @confirm_method, @cancel_method**
+
+Mark methods for TCC phases.
+
+**Metadata Attached**:
+```python
+func._tcc_method_config = TccMethodConfig(
+    method_type="try",  # or "confirm", "cancel"
+    timeout_ms=30000,
+    retry=3,
+    backoff_ms=1000
+)
+```
+
+### 4. Core Types (`fireflytx/core/`)
+
+#### SagaContext (`saga_context.py`)
+
+Shared data container for SAGA execution.
+
+```python
+from fireflytx.core import SagaContext
+
+context = SagaContext(correlation_id="saga-123")
+context.set_data("user_id", "user-456")
+context.set_data("order_total", 299.99)
+
+# Access in steps
+user_id = context.get_data("user_id")
+```
+
+#### SagaResult (`saga_result.py`)
+
+Result of SAGA execution.
+
+```python
+@dataclass
+class SagaResult:
+    success: bool
+    correlation_id: str
+    step_results: Dict[str, Any]
+    compensation_results: Dict[str, Any]
+    error: Optional[str]
+    failed_step: Optional[str]
+```
+
+#### TccResult (`tcc_result.py`)
+
+Result of TCC execution.
+
+```python
+@dataclass
+class TccResult:
+    success: bool
+    correlation_id: str
+    final_phase: str  # "CONFIRMED" or "CANCELLED"
+    participant_results: Dict[str, Any]
+    error: Optional[str]
+    failed_participant: Optional[str]
+```
+
+---
+
+## Development Setup
+
+### Prerequisites
+
+- **Python**: 3.9+ (3.11+ recommended)
+- **Java**: JDK 17+ (JDK 21 recommended)
+- **Maven**: 3.8+ (for building Java bridge)
+- **Git**: For version control
+
+### Clone Repository
+
+```bash
+git clone https://github.com/firefly-oss/python-transactional-engine.git
+cd python-transactional-engine
+```
+
+### Install Dependencies
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install in development mode
+pip install -e ".[dev]"
+
+# Install pre-commit hooks
+pre-commit install
+```
+
+### Build Java Bridge (Optional)
+
+The Java bridge JAR is pre-built and included in `fireflytx/integration/java_bridge/target/`. To rebuild:
+
+```bash
+cd fireflytx/integration/java_bridge
+mvn clean package
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=fireflytx --cov-report=html
+
+# Run specific test file
+pytest tests/test_saga.py
+
+# Run with verbose output
+pytest -v -s
+```
+
+### Interactive Shell
+
+```bash
+# Launch FireflyTX shell
+python -m fireflytx.shell
+
+# Or use CLI
+fireflytx shell
+```
+
+---
+
+## Python-Java Integration
 
 
-## Appendix: Directory and Module Map
-
-For a quick, feature-oriented overview of where things live, see docs/project-structure.md. Highlights:
-
-- High-level API: fireflytx/api/saga_executor.py
-- Engine wrappers: fireflytx/engine/saga_engine.py, fireflytx/engine/tcc_engine.py
-- Decorators: fireflytx/decorators/
-- Core types: fireflytx/core/
-- Java integration bridge (Python): fireflytx/utils/java_subprocess_bridge.py
-- Python callback HTTP server: fireflytx/callbacks/
-- Java bridge sources (JAR main class): fireflytx/java_bridge/src/main/java/com/firefly/transactional/
-- Config generator: fireflytx/config/java_config_generator.py
-- Events: fireflytx/events/
-- Persistence: fireflytx/persistence/
-- Logging: fireflytx/logging/
-- CLI: fireflytx/cli.py
