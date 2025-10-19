@@ -20,6 +20,48 @@
 
 ---
 
+## 📌 Standard TCC Method Signatures
+
+**FireflyTX uses a standardized, professional pattern for TCC method signatures with Pydantic support:**
+
+```python
+from pydantic import BaseModel
+
+# Define your data models
+class TransferRequest(BaseModel):
+    amount: float
+    from_account: str
+    to_account: str
+
+class ReservationResult(BaseModel):
+    reserved: bool
+    reservation_id: str
+
+# TRY method - receives input data (Pydantic model or dict)
+async def try_method(self, data: TransferRequest) -> ReservationResult:
+    ...
+
+# CONFIRM method - receives BOTH original data AND try result (Pydantic models or dicts)
+async def confirm_method(self, data: TransferRequest, try_result: ReservationResult) -> None:
+    ...
+
+# CANCEL method - receives BOTH original data AND try result (Pydantic models or dicts)
+async def cancel_method(self, data: TransferRequest, try_result: ReservationResult) -> None:
+    ...
+```
+
+**Key Points:**
+- ✅ **Pydantic Models Supported** - Use Pydantic models for type safety and validation (recommended)
+- ✅ **Plain Dicts Also Work** - Can use `dict` for maximum flexibility
+- ✅ **TRY** receives `data` - the input data for this participant
+- ✅ **CONFIRM** receives `data, try_result` - both original data and the result from TRY
+- ✅ **CANCEL** receives `data, try_result` - both original data and the result from TRY
+- ✅ **Automatic Conversion** - FireflyTX automatically converts between dicts and Pydantic models
+- ✅ All methods are `async` for non-blocking execution
+- ✅ This is the ONLY supported pattern - consistent across the entire codebase
+
+---
+
 ## What is the TCC Pattern?
 
 ### The Problem
@@ -154,11 +196,22 @@ Before diving in, you should understand:
 A TCC transaction is a Python class decorated with `@tcc`:
 
 ```python
+from pydantic import BaseModel
 from fireflytx.decorators.tcc import tcc
+
+# Define Pydantic models for type safety
+class OrderData(BaseModel):
+    order_id: str
+    amount: float
+    customer_id: str
+
+class PaymentReservation(BaseModel):
+    reservation_id: str
+    amount: float
 
 @tcc("payment-processing")  # ← TCC transaction name (must be unique)
 class PaymentProcessingTcc:
-    """Process payments with two-phase commit."""
+    """Process payments with two-phase commit using Pydantic models."""
 
     def __init__(self):
         # Optional: Initialize any instance variables
@@ -186,23 +239,30 @@ class OrderProcessingTcc:
             pass
 
         @try_method(timeout_ms=10000, retry=3)
-        async def try_payment(self, order_data):
+        async def try_payment(self, data: OrderData) -> PaymentReservation:
             """TRY: Reserve payment amount."""
             # Reserve funds (don't charge yet!)
-            reservation_id = f"RES-{order_data['order_id']}"
+            reservation_id = f"RES-{data.order_id}"
             # In real implementation, call payment service
-            return {"reservation_id": reservation_id, "amount": order_data["amount"]}
+            return PaymentReservation(
+                reservation_id=reservation_id,
+                amount=data.amount
+            )
 
         @confirm_method(timeout_ms=5000)
-        async def confirm_payment(self, reservation_data):
+        async def confirm_payment(self, data: OrderData, try_result: PaymentReservation):
             """CONFIRM: Actually charge the payment."""
             # In real implementation, confirm with payment service
+            # Access reservation_id from try_result (Pydantic model)
+            reservation_id = try_result.reservation_id
             pass
 
         @cancel_method(timeout_ms=5000, retry=5)
-        async def cancel_payment(self, reservation_data):
+        async def cancel_payment(self, data: OrderData, try_result: PaymentReservation):
             """CANCEL: Release the payment reservation."""
             # In real implementation, release reservation with payment service
+            # Access reservation_id from try_result (Pydantic model)
+            reservation_id = try_result.reservation_id
             pass
 ```
 
@@ -212,25 +272,24 @@ class OrderProcessingTcc:
 # TRY method
 async def try_method_name(
     self,
-    input_data: dict,           # Input data for this participant
-    context: TccContext = None  # Optional: shared context
-) -> dict:                      # Must return reservation data
+    data: dict              # Input data for this participant
+) -> dict:                  # Must return reservation data
     ...
 
 # CONFIRM method
 async def confirm_method_name(
     self,
-    try_result: dict,           # Result from try method
-    context: TccContext = None  # Optional: shared context
-) -> None:                      # Return value ignored
+    data: dict,             # Original input data
+    try_result: dict        # Result from try method
+) -> None:                  # Return value ignored
     ...
 
 # CANCEL method
 async def cancel_method_name(
     self,
-    try_result: dict,           # Result from try method
-    context: TccContext = None  # Optional: shared context
-) -> None:                      # Return value ignored
+    data: dict,             # Original input data
+    try_result: dict        # Result from try method
+) -> None:                  # Return value ignored
     ...
 ```
 
@@ -824,17 +883,17 @@ class ExternalAPIParticipant:
 
     # Try phase: Longer timeout for external API call
     @try_method(timeout_ms=15000, retry=3)
-    async def try_external_call(self, data):
+    async def try_external_call(self, data: dict):
         return await external_api.reserve(data)
 
     # Confirm phase: Quick confirmation
     @confirm_method(timeout_ms=3000, retry=1)
-    async def confirm_external_call(self, try_result):
+    async def confirm_external_call(self, data: dict, try_result: dict):
         await external_api.confirm(try_result["id"])
 
     # Cancel phase: Longer timeout with more retries for cleanup
     @cancel_method(timeout_ms=10000, retry=5)
-    async def cancel_external_call(self, try_result):
+    async def cancel_external_call(self, data: dict, try_result: dict):
         await external_api.cancel(try_result["id"])
 ```
 

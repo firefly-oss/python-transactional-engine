@@ -185,23 +185,44 @@ Execute a TCC transaction with Python-defined participants via Java subprocess b
 
 **Example:**
 ```python
+from pydantic import BaseModel
+
+# Define Pydantic models
+class PaymentRequest(BaseModel):
+    payment_id: str
+    amount: float
+
+class PaymentReservation(BaseModel):
+    reserved: bool
+    amount: float
+    reservation_id: str
+
 @tcc("payment-processing")
 class PaymentTcc:
     @tcc_participant("payment")
     class PaymentParticipant:
         @try_method
-        async def try_payment(self, amount: float):
-            return {"reserved": True}
+        async def try_payment(self, data: PaymentRequest) -> PaymentReservation:
+            # Pydantic models provide type safety and validation
+            return PaymentReservation(
+                reserved=True,
+                amount=data.amount,
+                reservation_id=f"RES-{data.payment_id}"
+            )
 
         @confirm_method
-        async def confirm_payment(self, reservation):
+        async def confirm_payment(self, data: PaymentRequest, try_result: PaymentReservation):
+            # Access Pydantic model attributes directly
+            print(f"Confirming payment {try_result.reservation_id}")
             pass
 
         @cancel_method
-        async def cancel_payment(self, reservation):
+        async def cancel_payment(self, data: PaymentRequest, try_result: PaymentReservation):
+            # Access Pydantic model attributes directly
+            print(f"Cancelling payment {try_result.reservation_id}")
             pass
 
-result = engine.execute(PaymentTcc, {"amount": 100.0})
+result = engine.execute(PaymentTcc, {"amount": 100.0, "payment_id": "PAY-001"})
 ```
 
 #### `stop()`

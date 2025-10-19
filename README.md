@@ -1838,55 +1838,53 @@ engine = SagaEngine(
 
 ```python
 import asyncio
-from typing import Dict, Any
+from pydantic import BaseModel
 from fireflytx import TccEngine, tcc, tcc_participant, try_method, confirm_method, cancel_method
-from fireflytx.core.tcc_context import TccContext
+
+# Define Pydantic models for type safety
+class DepositRequest(BaseModel):
+    account_id: str
+    amount: float
+
+class CreditReservation(BaseModel):
+    reserved: bool
+    reservation_id: str
+    amount: float
 
 @tcc("account-deposit")
 class AccountDepositTcc:
-    """Simple account deposit TCC transaction."""
-    
+    """Simple account deposit TCC transaction with Pydantic models."""
+
     @tcc_participant("credit-account")
     class CreditAccountParticipant:
-        
+
         @try_method
-        async def try_credit(self, context: TccContext, deposit_data: Dict[str, Any]) -> Dict[str, Any]:
+        async def try_credit(self, data: DepositRequest) -> CreditReservation:
             """Try to reserve credit for account."""
-            account_id = deposit_data["account_id"]
-            amount = deposit_data["amount"]
-            reservation_id = f"reserve_{account_id}_{amount}"
-            
+            reservation_id = f"reserve_{data.account_id}_{data.amount}"
+
             # Reserve account credit (example business logic)
-            print(f"💰 Reserving ${amount} credit for account {account_id}")
-            
-            return {
-                "reservation_id": reservation_id,
-                "account_id": account_id,
-                "amount": amount,
-                "status": "reserved"
-            }
-        
+            print(f"💰 Reserving ${data.amount} credit for account {data.account_id}")
+
+            return CreditReservation(
+                reserved=True,
+                reservation_id=reservation_id,
+                amount=data.amount
+            )
+
         @confirm_method
-        async def confirm_credit(self, context: TccContext, try_result: Dict[str, Any]) -> Dict[str, Any]:
+        async def confirm_credit(self, data: DepositRequest, try_result: CreditReservation):
             """Confirm the credit to account."""
-            reservation_id = try_result["reservation_id"]
-            amount = try_result["amount"]
-            account_id = try_result["account_id"]
-            
-            print(f"✅ Confirmed ${amount} credit to account {account_id} (reservation: {reservation_id})")
-            
-            return {"confirmed": True, "final_amount": amount}
-        
+            # Access Pydantic model attributes directly
+            print(f"✅ Confirmed ${try_result.amount} credit to account {data.account_id} (reservation: {try_result.reservation_id})")
+            return {"confirmed": True, "final_amount": try_result.amount}
+
         @cancel_method
-        async def cancel_credit(self, context: TccContext, try_result: Dict[str, Any]) -> Dict[str, Any]:
+        async def cancel_credit(self, data: DepositRequest, try_result: CreditReservation):
             """Cancel the credit reservation."""
-            reservation_id = try_result["reservation_id"]
-            amount = try_result["amount"]
-            account_id = try_result["account_id"]
-            
-            print(f"❌ Cancelled ${amount} credit reservation for account {account_id} (reservation: {reservation_id})")
-            
-            return {"cancelled": True, "reservation_id": reservation_id}
+            # Access Pydantic model attributes directly
+            print(f"❌ Cancelled ${try_result.amount} credit reservation for account {data.account_id} (reservation: {try_result.reservation_id})")
+            return {"cancelled": True, "reservation_id": try_result.reservation_id}
 
 # Usage
 async def main():
