@@ -27,6 +27,10 @@ PYTHON_CMD="python3"
 SKIP_DEPS=false
 QUIET=false
 FORCE=false
+USE_VENV=false
+VENV_PATH=""
+USE_USER_INSTALL=false
+PIP_INSTALL_FLAGS=""
 
 # Function to print colored output
 print_status() {
@@ -65,6 +69,8 @@ OPTIONS:
     --skip-deps         Skip dependency installation
     --quiet             Quiet installation (minimal output)
     --force             Force installation even if already installed
+    --venv PATH         Use or create virtual environment at PATH
+    --user              Install to user site-packages (pip install --user)
     --help              Show this help message
 
 NOTE:
@@ -76,6 +82,12 @@ EXAMPLES:
 
     # Development install (editable mode)
     curl -fsSL <script-url> | bash -s -- --dev
+
+    # Install with virtual environment (recommended for externally-managed systems)
+    ./install.sh --venv ~/.fireflytx-venv
+
+    # Install to user site-packages (for externally-managed systems)
+    ./install.sh --user
 
     # Source install with custom Python
     ./install.sh --source --python python3.11
@@ -98,6 +110,15 @@ parse_args() {
         case $1 in
             --dev)
                 INSTALL_METHOD="dev"
+                shift
+                ;;
+            --venv)
+                USE_VENV=true
+                VENV_PATH="$2"
+                shift 2
+                ;;
+            --user)
+                USE_USER_INSTALL=true
                 shift
                 ;;
             --source)
@@ -190,6 +211,62 @@ check_requirements() {
     fi
 }
 
+# Detect if Python environment is externally managed (PEP 668)
+detect_externally_managed() {
+    # Check if we're in a virtual environment
+    if [[ -n "$VIRTUAL_ENV" ]]; then
+        print_status "Running in virtual environment: $VIRTUAL_ENV"
+        return 1  # Not externally managed
+    fi
+
+    # Check for EXTERNALLY-MANAGED marker file
+    local python_lib_path=$($PYTHON_CMD -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
+    if [ -f "$python_lib_path/EXTERNALLY-MANAGED" ]; then
+        return 0  # Externally managed
+    fi
+
+    return 1  # Not externally managed
+}
+
+# Setup virtual environment if needed
+setup_venv() {
+    if $USE_VENV; then
+        if [ -z "$VENV_PATH" ]; then
+            VENV_PATH="$HOME/.fireflytx-venv"
+        fi
+
+        if [ ! -d "$VENV_PATH" ]; then
+            print_step "Creating virtual environment at $VENV_PATH..."
+            $PYTHON_CMD -m venv "$VENV_PATH"
+            print_status "Virtual environment created ✓"
+        else
+            print_status "Using existing virtual environment at $VENV_PATH"
+        fi
+
+        # Activate virtual environment
+        source "$VENV_PATH/bin/activate"
+        PYTHON_CMD="$VENV_PATH/bin/python"
+        print_status "Virtual environment activated ✓"
+    fi
+}
+
+# Determine pip install flags based on environment
+setup_pip_flags() {
+    if detect_externally_managed; then
+        if ! $USE_VENV && ! $USE_USER_INSTALL; then
+            print_warning "Detected externally-managed Python environment (PEP 668)"
+            print_status "Automatically using --user flag for installation"
+            print_status "Alternatively, use --venv to create a virtual environment"
+            USE_USER_INSTALL=true
+        fi
+    fi
+
+    if $USE_USER_INSTALL; then
+        PIP_INSTALL_FLAGS="--user"
+        print_status "Installing to user site-packages"
+    fi
+}
+
 # Check if FireflyTX is already installed
 check_existing_installation() {
     if $PYTHON_CMD -c "import fireflytx" 2>/dev/null; then
@@ -209,15 +286,16 @@ install_dependencies() {
         print_status "Skipping dependency installation"
         return
     fi
-    
+
     print_step "Installing/updating pip and setuptools..."
-    
+
+    # Try to upgrade pip, but don't fail if it's externally managed
     if ! $QUIET; then
-        $PYTHON_CMD -m pip install --upgrade pip setuptools wheel
+        $PYTHON_CMD -m pip install --upgrade $PIP_INSTALL_FLAGS pip setuptools wheel 2>&1 | grep -v "externally-managed-environment" || true
     else
-        $PYTHON_CMD -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1
+        $PYTHON_CMD -m pip install --upgrade $PIP_INSTALL_FLAGS pip setuptools wheel >/dev/null 2>&1 || true
     fi
-    
+
     print_status "Dependencies updated ✓"
 }
 
@@ -278,18 +356,18 @@ install_from_source() {
     if [[ "$INSTALL_METHOD" == "dev" ]]; then
         print_status "Installing in development mode..."
         if ! $QUIET; then
-            $PYTHON_CMD -m pip install -e .
+            $PYTHON_CMD -m pip install $PIP_INSTALL_FLAGS -e .
         else
-            $PYTHON_CMD -m pip install -e . >/dev/null 2>&1
+            $PYTHON_CMD -m pip install $PIP_INSTALL_FLAGS -e . >/dev/null 2>&1
         fi
         print_success "FireflyTX installed in development mode ✓"
         print_status "Installation directory: $INSTALL_DIR"
     else
         print_status "Installing from source..."
         if ! $QUIET; then
-            $PYTHON_CMD -m pip install .
+            $PYTHON_CMD -m pip install $PIP_INSTALL_FLAGS .
         else
-            $PYTHON_CMD -m pip install . >/dev/null 2>&1
+            $PYTHON_CMD -m pip install $PIP_INSTALL_FLAGS . >/dev/null 2>&1
         fi
         print_success "FireflyTX installed from source ✓"
 
@@ -428,6 +506,71 @@ build_java_bridge() {
     cd - >/dev/null
 }
 
+# Create shell wrapper script
+create_shell_wrapper() {
+    print_step "Creating fireflytx-shell command..."
+
+    # Determine the bin directory based on installation method
+    if $USE_USER_INSTALL || [[ -n "$VIRTUAL_ENV" ]]; then
+        # User install or venv - use user bin directory
+        if [[ -n "$VIRTUAL_ENV" ]]; then
+            BIN_DIR="$VIRTUAL_ENV/bin"
+        else
+            # User bin directory
+            BIN_DIR="$HOME/.local/bin"
+            mkdir -p "$BIN_DIR"
+
+            # Check if ~/.local/bin is in PATH
+            if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+                print_warning "~/.local/bin is not in your PATH"
+                print_status "Add this to your ~/.bashrc or ~/.zshrc:"
+                echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+            fi
+        fi
+    else
+        # System-wide install - use system bin directory
+        if command_exists sudo && [ -w /usr/local/bin ]; then
+            BIN_DIR="/usr/local/bin"
+        elif [ -w /usr/local/bin ]; then
+            BIN_DIR="/usr/local/bin"
+        else
+            # Fallback to user bin
+            BIN_DIR="$HOME/.local/bin"
+            mkdir -p "$BIN_DIR"
+            print_warning "No write access to /usr/local/bin, using ~/.local/bin"
+        fi
+    fi
+
+    # Create the wrapper script
+    WRAPPER_SCRIPT="$BIN_DIR/fireflytx-shell"
+
+    cat > "$WRAPPER_SCRIPT" << 'EOF'
+#!/bin/bash
+#
+# FireflyTX Interactive Shell Launcher
+# Auto-generated by install.sh
+#
+
+# Find Python command
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+else
+    echo "Error: Python not found" >&2
+    exit 1
+fi
+
+# Launch FireflyTX shell
+exec $PYTHON_CMD -m fireflytx.shell "$@"
+EOF
+
+    chmod +x "$WRAPPER_SCRIPT"
+
+    print_success "fireflytx-shell command created ✓"
+    print_status "Location: $WRAPPER_SCRIPT"
+}
+
 # Verify installation
 verify_installation() {
     print_step "Verifying installation..."
@@ -464,7 +607,8 @@ show_post_install() {
     echo "  ✓ Java subprocess bridge"
     echo
     echo -e "${CYAN}🚀 Quick Start:${NC}"
-    echo "  ${GREEN}python -m fireflytx.shell${NC}     - Start interactive shell"
+    echo "  ${GREEN}fireflytx-shell${NC}                - Start interactive shell"
+    echo "  ${GREEN}python -m fireflytx.shell${NC}     - Alternative shell command"
     echo "  ${GREEN}python -m fireflytx.cli status${NC} - Check system status"
     echo
     if [[ "$INSTALL_METHOD" == "dev" ]]; then
@@ -504,19 +648,25 @@ EOF
         echo -e "${NC}"
         echo
     fi
-    
+
     # Parse arguments
     parse_args "$@"
-    
+
     # Check requirements
     check_requirements
-    
+
+    # Setup virtual environment if requested
+    setup_venv
+
+    # Setup pip install flags based on environment
+    setup_pip_flags
+
     # Check existing installation
     check_existing_installation
-    
+
     # Install dependencies
     install_dependencies
-    
+
     # Install based on method
     case $INSTALL_METHOD in
         pip)
@@ -536,6 +686,9 @@ EOF
 
     # Build Java bridge
     build_java_bridge
+
+    # Create shell wrapper command
+    create_shell_wrapper
 
     # Show post-installation info
     show_post_install
