@@ -25,7 +25,7 @@ class TestPaymentSaga:
     """Simple SAGA for testing the Java bridge architecture."""
 
     @saga_step(step_id="validate_payment", depends_on=[], retry=3, timeout_ms=5000)
-    async def validate_payment(self, context: SagaContext, input_data: dict) -> dict:
+    async def validate_payment(self, input_data: dict, context: SagaContext) -> dict:
         """Validate payment information."""
         logger.info(f"🔍 Validating payment: {input_data.get('payment_id', 'unknown')}")
 
@@ -53,7 +53,7 @@ class TestPaymentSaga:
     @saga_step(
         step_id="process_payment", depends_on=["validate_payment"], retry=2, timeout_ms=10000
     )
-    async def process_payment(self, context: SagaContext, input_data: dict) -> dict:
+    async def process_payment(self, input_data: dict, context: SagaContext) -> dict:
         """Process the validated payment."""
         logger.info(f"💳 Processing payment: {input_data.get('payment_id', 'unknown')}")
 
@@ -78,7 +78,7 @@ class TestPaymentSaga:
     @saga_step(
         step_id="send_confirmation", depends_on=["process_payment"], retry=1, timeout_ms=3000
     )
-    async def send_confirmation(self, context: SagaContext, input_data: dict) -> dict:
+    async def send_confirmation(self, input_data: dict, context: SagaContext) -> dict:
         """Send payment confirmation."""
         logger.info(
             f"📧 Sending confirmation for payment: {input_data.get('payment_id', 'unknown')}"

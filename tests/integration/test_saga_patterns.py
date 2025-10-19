@@ -157,7 +157,7 @@ class OrderProcessingSaga:
 
     @saga_step("reserve-payment")
     async def reserve_payment(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Reserve payment for the order."""
         result = await payment_service.reserve_payment(
@@ -168,7 +168,7 @@ class OrderProcessingSaga:
 
     @compensation_step("reserve-payment")
     async def cancel_payment_reservation(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Cancel payment reservation."""
         payment_id = context.get_data("payment_id")
@@ -178,7 +178,7 @@ class OrderProcessingSaga:
 
     @saga_step("reserve-inventory")
     async def reserve_inventory(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Reserve inventory items."""
         results = []
@@ -191,7 +191,7 @@ class OrderProcessingSaga:
 
     @compensation_step("reserve-inventory")
     async def cancel_inventory_reservations(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Cancel inventory reservations."""
         reservation_ids = context.get_data("inventory_reservations") or []
@@ -203,7 +203,7 @@ class OrderProcessingSaga:
 
     @saga_step("charge-payment", depends_on="reserve-payment")
     async def charge_payment(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Charge the reserved payment."""
         payment_id = context.get_data("payment_id")
@@ -212,7 +212,7 @@ class OrderProcessingSaga:
 
     @compensation_step("charge-payment")
     async def refund_payment(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Refund the charged payment."""
         payment_id = context.get_data("payment_id")
@@ -222,7 +222,7 @@ class OrderProcessingSaga:
 
     @saga_step("fulfill-inventory", depends_on=["reserve-inventory", "charge-payment"])
     async def fulfill_inventory(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Fulfill inventory reservations."""
         reservation_ids = context.get_data("inventory_reservations") or []
@@ -234,7 +234,7 @@ class OrderProcessingSaga:
 
     @saga_step("create-shipment", depends_on="fulfill-inventory")
     async def create_shipment(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Create shipment for the order."""
         result = await shipping_service.create_shipment(
@@ -245,7 +245,7 @@ class OrderProcessingSaga:
 
     @compensation_step("create-shipment")
     async def cancel_shipment(
-        self, context: SagaContext, order_data: Dict[str, Any]
+        self, order_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Cancel the created shipment."""
         shipment_id = context.get_data("shipment_id")
@@ -260,7 +260,7 @@ class PaymentProcessingSaga:
 
     @saga_step("validate-payment")
     async def validate_payment(
-        self, context: SagaContext, payment_data: Dict[str, Any]
+        self, payment_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Validate payment information."""
         # Simulate validation logic
@@ -274,7 +274,7 @@ class PaymentProcessingSaga:
 
     @saga_step("process-payment", depends_on="validate-payment")
     async def process_payment(
-        self, context: SagaContext, payment_data: Dict[str, Any]
+        self, payment_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Process the payment."""
         result = await payment_service.reserve_payment(
@@ -285,7 +285,7 @@ class PaymentProcessingSaga:
 
     @compensation_step("process-payment")
     async def cancel_payment(
-        self, context: SagaContext, payment_data: Dict[str, Any]
+        self, payment_data: Dict[str, Any], context: SagaContext
     ) -> Dict[str, Any]:
         """Cancel the payment."""
         payment_id = context.get_data("payment_id")
@@ -299,29 +299,29 @@ class FailingSaga:
     """SAGA that intentionally fails to test compensation."""
 
     @saga_step("step1")
-    async def step1(self, context: SagaContext, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def step1(self, data: Dict[str, Any], context: SagaContext) -> Dict[str, Any]:
         """First step that succeeds."""
         context.set_data("step1_completed", True)
         return {"status": "step1_completed"}
 
     @compensation_step("step1")
-    async def compensate_step1(self, context: SagaContext, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def compensate_step1(self, data: Dict[str, Any], context: SagaContext) -> Dict[str, Any]:
         """Compensate step1."""
         return {"status": "step1_compensated"}
 
     @saga_step("step2", depends_on="step1")
-    async def step2(self, context: SagaContext, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def step2(self, data: Dict[str, Any], context: SagaContext) -> Dict[str, Any]:
         """Second step that succeeds."""
         context.set_data("step2_completed", True)
         return {"status": "step2_completed"}
 
     @compensation_step("step2")
-    async def compensate_step2(self, context: SagaContext, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def compensate_step2(self, data: Dict[str, Any], context: SagaContext) -> Dict[str, Any]:
         """Compensate step2."""
         return {"status": "step2_compensated"}
 
     @saga_step("failing-step", depends_on="step2")
-    async def failing_step(self, context: SagaContext, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def failing_step(self, data: Dict[str, Any], context: SagaContext) -> Dict[str, Any]:
         """Step that always fails."""
         raise RuntimeError("This step always fails")
 

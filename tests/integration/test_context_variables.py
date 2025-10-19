@@ -10,6 +10,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 """
 
 import pytest
+import pytest_asyncio
 import asyncio
 import logging
 from typing import Dict, Any
@@ -135,7 +136,7 @@ class SimpleContextSaga:
         return {"id": resource_id, "status": "finalized"}
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def saga_engine():
     """Fixture to create and initialize a SAGA engine."""
     engine = SagaEngine()
