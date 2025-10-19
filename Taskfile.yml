@@ -1,0 +1,113 @@
+version: '3'
+
+vars:
+  PYTHON: python3
+  SRC_DIR: fireflytx
+  TEST_DIR: tests
+  LIB_ENGINE_DIR: "{{.ROOT_DIR}}/../lib-transactional-engine"
+  LIB_ENGINE_REPO: "https://github.com/firefly-oss/lib-transactional-engine.git"
+  JAVA_BRIDGE_DIR: "{{.ROOT_DIR}}/fireflytx/integration/java_bridge"
+
+env:
+  PYTHONPATH: "{{.ROOT_DIR}}"
+  FIREFLYTX_TEST_MODE: "1"
+
+tasks:
+  default:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+    silent: true
+
+  # === Installation ===
+  install:
+    desc: "Install FireflyTX system-wide with all components"
+    cmds:
+      - echo "🔥 Installing FireflyTX system-wide..."
+      - echo ""
+      - task: check-requirements
+      - task: setup-lib-engine
+      - task: build-java-bridge
+      - echo ""
+      - echo "📦 Installing Python package..."
+      - "{{.PYTHON}} -m pip install --upgrade pip setuptools wheel"
+      - "{{.PYTHON}} -m pip install ."
+      - echo ""
+      - task: verify-install
+      - echo ""
+      - echo "✅ FireflyTX installed successfully!"
+      - echo ""
+      - echo "Quick start - python -m fireflytx.shell"
+
+  check-requirements:
+    desc: "Check system requirements"
+    silent: true
+    cmds:
+      - |
+        echo "🔍 Checking requirements..."
+        echo -n "  Python... "
+        {{.PYTHON}} --version >/dev/null 2>&1 && echo "✓" || (echo "❌"; exit 1)
+        echo -n "  Java... "
+        java -version >/dev/null 2>&1 && echo "✓" || (echo "❌ Install Java 11+"; exit 1)
+        echo -n "  Maven... "
+        mvn -version >/dev/null 2>&1 && echo "✓" || (echo "❌ Install Maven"; exit 1)
+        echo -n "  Git... "
+        git --version >/dev/null 2>&1 && echo "✓" || (echo "❌ Install Git"; exit 1)
+        echo "✅ All requirements met"
+
+  setup-lib-engine:
+    desc: "Download and build lib-transactional-engine"
+    silent: true
+    cmds:
+      - |
+        if [ ! -d "{{.LIB_ENGINE_DIR}}" ]; then
+          echo "📥 Cloning lib-transactional-engine..."
+          git clone {{.LIB_ENGINE_REPO}} {{.LIB_ENGINE_DIR}} 2>&1 | grep -v "Cloning into" || true
+        else
+          echo "✓ lib-transactional-engine exists, updating..."
+          cd {{.LIB_ENGINE_DIR}} && git pull origin main 2>&1 | grep -E "Already up to date|Updating" || true
+        fi
+      - |
+        echo "🔨 Building lib-transactional-engine (this may take a minute)..."
+        cd {{.LIB_ENGINE_DIR}} && mvn clean install -DskipTests -q
+        echo "✅ lib-transactional-engine built successfully"
+
+  build-java-bridge:
+    desc: "Build Java subprocess bridge"
+    silent: true
+    cmds:
+      - |
+        echo "🔨 Building Java subprocess bridge..."
+        cd {{.JAVA_BRIDGE_DIR}} && mvn clean package -DskipTests -q
+        cp target/java-subprocess-bridge-1.0.0-SNAPSHOT.jar java-subprocess-bridge.jar
+        JAR_SIZE=$(du -h java-subprocess-bridge.jar | cut -f1)
+        echo "✅ Java bridge built successfully ($JAR_SIZE)"
+
+  verify-install:
+    desc: "Verify FireflyTX installation"
+    silent: true
+    cmds:
+      - |
+        echo "🔍 Verifying installation..."
+        echo -n "  Python package... "
+        {{.PYTHON}} -c 'import fireflytx; from fireflytx import saga, SagaEngine' 2>/dev/null && echo "✓" || (echo "❌"; exit 1)
+        echo -n "  Java bridge... "
+        [ -f "{{.JAVA_BRIDGE_DIR}}/java-subprocess-bridge.jar" ] && echo "✓" || (echo "❌"; exit 1)
+        echo -n "  lib-transactional-engine... "
+        [ -f "{{.LIB_ENGINE_DIR}}/target/lib-transactional-engine-1.0.0-SNAPSHOT.jar" ] && echo "✓" || (echo "❌"; exit 1)
+        echo "✅ All components verified"
+
+  # === Testing ===
+  test:
+    desc: "Run all tests"
+    cmds:
+      - echo "🧪 Running tests..."
+      - "{{.PYTHON}} -m pytest {{.TEST_DIR}}/ -v"
+      - echo "✅ All tests passed!"
+
+  # === Shell ===
+  shell:
+    desc: "Start interactive FireflyTX shell"
+    cmds:
+      - echo "🔥 Starting FireflyTX shell..."
+      - "{{.PYTHON}} -m fireflytx.shell"
